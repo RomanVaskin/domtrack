@@ -17,11 +17,11 @@ export function OrderTimeline() {
       {steps.map((step, i) => {
         const isLast = i === steps.length - 1
         return (
-          <li key={step.label} className="relative flex gap-4 pb-6 last:pb-0">
+          <li key={step.label} className="relative flex gap-3 pb-5 last:pb-0 sm:gap-4 sm:pb-6">
             {!isLast && (
               <span
                 aria-hidden="true"
-                className={`absolute left-[13px] top-7 h-[calc(100%-1rem)] w-px ${
+                className={`absolute left-[11px] top-6 h-[calc(100%-0.75rem)] w-px sm:left-[13px] sm:top-7 ${
                   step.state === 'done' ? 'bg-primary/40' : 'bg-border'
                 }`}
               />
@@ -29,7 +29,7 @@ export function OrderTimeline() {
 
             <span
               aria-hidden="true"
-              className={`relative z-10 mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border-2 transition-colors ${
+              className={`relative z-10 mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border-2 transition-colors sm:size-7 ${
                 step.state === 'done'
                   ? 'border-primary bg-primary text-primary-foreground'
                   : step.state === 'current'
@@ -38,7 +38,7 @@ export function OrderTimeline() {
               }`}
             >
               {step.state === 'done' ? (
-                <Check className="size-4" strokeWidth={3} />
+                <Check className="size-3.5 sm:size-4" strokeWidth={3} />
               ) : step.state === 'current' ? (
                 <span className="size-2.5 rounded-full bg-primary" />
               ) : (
@@ -47,7 +47,7 @@ export function OrderTimeline() {
             </span>
 
             <div
-              className={`flex-1 rounded-xl px-3 py-2 transition-colors ${
+              className={`min-w-0 flex-1 rounded-xl px-3 py-2 transition-colors ${
                 step.state === 'current' ? 'bg-accent' : ''
               }`}
             >

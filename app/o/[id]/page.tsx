@@ -9,11 +9,11 @@ const included = ['Стрижка газона', 'Сбор травы', 'Убо�
 
 export default function OrderTrackerPage() {
   return (
-    <main className="min-h-screen pb-16">
+    <main className="min-h-screen pb-10 sm:pb-16">
       {/* Top bar */}
       <header className="border-b border-border bg-background/80 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-md items-center justify-between px-5">
-          <Link href="/" aria-label="DomTrack — на главную">
+        <div className="mx-auto flex h-14 max-w-md items-center justify-between px-4 sm:h-16 sm:px-5">
+          <Link href="/" aria-label="DomTrack — на главную" className="inline-flex min-h-11 items-center">
             <Logo />
           </Link>
           <span className="rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
@@ -22,19 +22,19 @@ export default function OrderTrackerPage() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-md space-y-4 px-5 pt-5">
+      <div className="mx-auto max-w-md space-y-3 px-4 pt-4 sm:space-y-4 sm:px-5 sm:pt-5">
         {/* Order summary card */}
-        <section className="rounded-2xl border border-border bg-card p-6">
+        <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
           <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">
             Стрижка газона
           </h1>
 
-          <div className="mt-5 space-y-3 text-sm">
+          <div className="mt-4 space-y-3 text-sm sm:mt-5">
             <div className="flex items-center gap-3 text-muted-foreground">
               <Calendar className="size-4 shrink-0" />
               <span>19 сентября, 12:00</span>
             </div>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3 text-muted-foreground">
                 <User className="size-4 shrink-0" />
                 <span>
@@ -58,7 +58,7 @@ export default function OrderTrackerPage() {
         </section>
 
         {/* Status timeline — main focus */}
-        <section className="rounded-2xl border border-border bg-card p-6">
+        <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
           <h2 className="mb-5 font-display text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Статус заказа
           </h2>
@@ -66,7 +66,7 @@ export default function OrderTrackerPage() {
         </section>
 
         {/* What's included */}
-        <section className="rounded-2xl border border-border bg-card p-6">
+        <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
           <h2 className="font-display text-base font-semibold text-foreground">
             Что входит
           </h2>
@@ -83,7 +83,7 @@ export default function OrderTrackerPage() {
         </section>
 
         {/* Comment */}
-        <section className="rounded-2xl border border-border bg-secondary/60 p-6">
+        <section className="rounded-2xl border border-border bg-secondary/60 p-5 sm:p-6">
           <h2 className="font-display text-base font-semibold text-foreground">
             Комментарий
           </h2>
@@ -93,7 +93,7 @@ export default function OrderTrackerPage() {
         </section>
 
         {/* Work photos */}
-        <section className="rounded-2xl border border-border bg-card p-6">
+        <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
           <h2 className="mb-4 font-display text-base font-semibold text-foreground">
             Фото работы
           </h2>
@@ -101,7 +101,7 @@ export default function OrderTrackerPage() {
         </section>
 
         {/* Actions */}
-        <div className="space-y-3 pt-1">
+        <div className="space-y-3 pt-2">
           <Button size="lg" className="w-full rounded-full text-base">
             Принять работу
           </Button>
@@ -118,7 +118,7 @@ export default function OrderTrackerPage() {
         <div className="pt-4 text-center">
           <a
             href="#"
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            className="inline-flex min-h-11 items-center justify-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <MessageCircle className="size-4" />
             Есть вопрос? Написать в DomTrack

@@ -8,19 +8,19 @@ const photos = [
 
 export function WorkPhotos() {
   return (
-    <div className="grid grid-cols-3 gap-3">
+    <div className="grid gap-4 sm:grid-cols-3 sm:gap-3">
       {photos.map((p) => (
         <figure key={p.label} className="group">
-          <div className="relative aspect-[3/4] overflow-hidden rounded-xl border border-border">
+          <div className="relative aspect-[16/10] overflow-hidden rounded-xl border border-border sm:aspect-[3/4]">
             <Image
               src={p.src || '/placeholder.svg'}
               alt={p.alt}
               fill
-              sizes="30vw"
+              sizes="(max-width: 639px) calc(100vw - 72px), 30vw"
               className="object-cover"
             />
           </div>
-          <figcaption className="mt-1.5 text-center text-xs font-medium text-muted-foreground">
+          <figcaption className="mt-1.5 text-left text-xs font-medium text-muted-foreground sm:text-center">
             {p.label}
           </figcaption>
         </figure>

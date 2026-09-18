@@ -12,8 +12,8 @@ export default function HomePage() {
       <ServiceGrid />
       <HowItWorks />
 
-      <footer className="mx-auto mt-24 max-w-6xl px-5 pb-12 md:px-8">
-        <div className="flex flex-col items-start justify-between gap-4 border-t border-border pt-8 sm:flex-row sm:items-center">
+      <footer className="mx-auto mt-16 max-w-6xl px-4 pb-7 sm:mt-24 sm:px-5 sm:pb-12 md:px-8">
+        <div className="flex flex-col items-start justify-between gap-3 border-t border-border pt-6 sm:flex-row sm:items-center sm:gap-4 sm:pt-8">
           <Logo />
           <p className="text-sm text-muted-foreground">
             Дом под присмотром. © {new Date().getFullYear()} DomTrack
