@@ -7,6 +7,7 @@ import sharp from 'sharp'
 import { GET as getPhoto } from '../app/api/photos/[id]/route.ts'
 import { POST as uploadPhoto } from '../app/api/photos/route.ts'
 import { getOrderByClientToken, getOrderByWorkerToken } from '../lib/orders.ts'
+import { acceptClientOrder } from '../lib/client-orders.ts'
 import { advanceWorkerOrder } from '../lib/worker-orders.ts'
 import { getDatabase, PostgresSessionStore } from '../lib/telegram/postgres-store.ts'
 
@@ -78,6 +79,10 @@ async function main() {
     assert.equal((await store.assignOrder(orderId)).kind, 'assigned')
     state = (await sql`SELECT assigned_at FROM orders WHERE id = ${orderId}::bigint`)[0]
     assert.equal(state.assigned_at.toISOString(), assignedAt)
+    assert.deepEqual(await acceptClientOrder(confirmedA.clientToken), {
+      ok: false,
+      error: 'invalid_transition',
+    })
 
     assert.deepEqual(await advanceWorkerOrder(confirmedA.workerToken, 'complete'), {
       ok: false,
@@ -106,6 +111,10 @@ async function main() {
     })
     state = (await sql`SELECT * FROM orders WHERE id = ${orderId}::bigint`)[0]
     assert.equal(state.on_the_way_at.toISOString(), onTheWayAt)
+    assert.deepEqual(await acceptClientOrder(confirmedA.clientToken), {
+      ok: false,
+      error: 'invalid_transition',
+    })
 
     assert.deepEqual(await advanceWorkerOrder(confirmedA.workerToken, 'start'), {
       ok: true,
@@ -120,6 +129,10 @@ async function main() {
     })
     state = (await sql`SELECT * FROM orders WHERE id = ${orderId}::bigint`)[0]
     assert.equal(state.started_at.toISOString(), startedAt)
+    assert.deepEqual(await acceptClientOrder(confirmedA.clientToken), {
+      ok: false,
+      error: 'invalid_transition',
+    })
 
     const image = await sharp({
       create: { width: 3000, height: 1500, channels: 3, background: '#447799' },
@@ -201,6 +214,37 @@ async function main() {
     assert.equal(completedClientOrder?.workerName, 'Исполнитель')
     assert.equal(completedWorkerOrder?.status, 'completed')
 
+    assert.deepEqual(await acceptClientOrder(confirmedA.workerToken), {
+      ok: false,
+      error: 'not_found',
+    })
+    assert.deepEqual(await acceptClientOrder('x'.repeat(32)), {
+      ok: false,
+      error: 'not_found',
+    })
+    state = (await sql`SELECT status, accepted_at FROM orders WHERE id = ${orderId}::bigint`)[0]
+    assert.equal(state.status, 'completed')
+    assert.equal(state.accepted_at, null)
+
+    const [acceptance, concurrentAcceptance] = await Promise.all([
+      acceptClientOrder(confirmedA.clientToken),
+      acceptClientOrder(confirmedA.clientToken),
+    ])
+    assert.equal(acceptance.ok, true)
+    if (!acceptance.ok) throw new Error('acceptance failed')
+    assert.equal(acceptance.status, 'accepted')
+    assert.ok(acceptance.acceptedAt)
+    assert.deepEqual(concurrentAcceptance, acceptance)
+    assert.deepEqual(await acceptClientOrder(confirmedA.clientToken), acceptance)
+    state = (await sql`SELECT status, completed_at, accepted_at FROM orders WHERE id = ${orderId}::bigint`)[0]
+    assert.equal(state.status, 'accepted')
+    assert.equal(state.completed_at.toISOString(), completedAt)
+    assert.equal(state.accepted_at.toISOString(), acceptance.acceptedAt)
+    assert.deepEqual(await acceptClientOrder('invalid'), {
+      ok: false,
+      error: 'not_found',
+    })
+
     const clientOrder = await getOrderByClientToken(confirmedA.clientToken)
     const workerOrder = await getOrderByWorkerToken(confirmedA.workerToken)
     assert.equal(clientOrder?.number, 'DT-000001')
@@ -209,6 +253,10 @@ async function main() {
     assert.equal(workerOrder?.clientPhone, '+79990000000')
     assert.deepEqual(clientOrder?.photos.map((photo) => photo.kind), ['before', 'after'])
     assert.deepEqual(workerOrder?.photos.map((photo) => photo.kind), ['before', 'after'])
+    assert.equal(clientOrder?.status, 'accepted')
+    assert.equal(clientOrder?.acceptedAt, acceptance.acceptedAt)
+    assert.equal(workerOrder?.status, 'accepted')
+    assert.equal(workerOrder?.acceptedAt, acceptance.acceptedAt)
     assert.equal(await getOrderByClientToken(confirmedA.workerToken), null)
     assert.equal(await getOrderByWorkerToken(confirmedA.clientToken), null)
     assert.equal(await getOrderByClientToken('invalid'), null)
@@ -231,6 +279,13 @@ async function main() {
     assert.equal(rejectedB.kind, 'rejected')
     assert.equal((await store.confirmOrder(String(second.id))).kind, 'rejected')
 
+    const rejectedClientToken = 'q'.repeat(32)
+    await sql`UPDATE orders SET client_token = ${rejectedClientToken} WHERE id = ${second.id}`
+    assert.deepEqual(await acceptClientOrder(rejectedClientToken), {
+      ok: false,
+      error: 'invalid_transition',
+    })
+
     const rejectedWorkerToken = 'r'.repeat(32)
     await sql`UPDATE orders SET worker_token = ${rejectedWorkerToken} WHERE id = ${second.id}`
     assert.deepEqual(await advanceWorkerOrder(rejectedWorkerToken, 'leave'), {
@@ -239,15 +294,17 @@ async function main() {
     })
 
     const states = await sql`
-      SELECT status, confirmed_at, rejected_at, assigned_at, on_the_way_at, started_at, completed_at
+      SELECT status, confirmed_at, rejected_at, assigned_at, on_the_way_at, started_at,
+             completed_at, accepted_at
       FROM orders ORDER BY id
     `
-    assert.equal(states[0].status, 'completed')
+    assert.equal(states[0].status, 'accepted')
     assert.ok(states[0].confirmed_at)
     assert.ok(states[0].assigned_at)
     assert.ok(states[0].on_the_way_at)
     assert.ok(states[0].started_at)
     assert.ok(states[0].completed_at)
+    assert.ok(states[0].accepted_at)
     assert.equal(states[0].rejected_at, null)
     assert.equal(states[1].status, 'rejected')
     assert.ok(states[1].rejected_at)

@@ -17,6 +17,7 @@ export interface PublicOrder {
   onTheWayAt: string | null
   startedAt: string | null
   completedAt: string | null
+  acceptedAt: string | null
   photos: OrderPhoto[]
 }
 
@@ -35,6 +36,7 @@ export const TRACKABLE_ORDER_STATUSES = [
   'on_the_way',
   'in_progress',
   'completed',
+  'accepted',
 ] as const
 
 export type TrackableOrderStatus = (typeof TRACKABLE_ORDER_STATUSES)[number]
@@ -72,6 +74,7 @@ function mapPublicOrder(row: Record<string, unknown>): PublicOrder {
     onTheWayAt: nullableDate(row.on_the_way_at),
     startedAt: nullableDate(row.started_at),
     completedAt: nullableDate(row.completed_at),
+    acceptedAt: nullableDate(row.accepted_at),
     photos: mapPhotos(row.photos),
   }
 }

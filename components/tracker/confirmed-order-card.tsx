@@ -3,6 +3,11 @@ import { CalendarDays, Clock, MapPin, Phone } from 'lucide-react'
 import { Logo } from '@/components/logo'
 import { OrderTimeline } from '@/components/tracker/order-timeline'
 import { formatRequestedDate } from '@/lib/format-requested-date'
+import {
+  CLIENT_ACCEPTED_MESSAGE,
+  CLIENT_ACCEPTED_TITLE,
+  getWorkerStatusLabel,
+} from '@/lib/order-presentation'
 import type { PublicOrder } from '@/lib/orders'
 import { formatServiceParameters, SERVICE_LABELS } from '@/lib/telegram/flow'
 
@@ -16,15 +21,9 @@ export function ConfirmedOrderCard({
   children?: React.ReactNode
 }) {
   const parameters = formatServiceParameters(order.serviceType, order.parameters)
-  const statusLabel = {
-    confirmed: 'Ожидает назначения',
-    assigned: 'Исполнитель назначен',
-    on_the_way: 'Исполнитель в пути',
-    in_progress: 'Работа начата',
-    completed: 'Работа завершена',
-  }[order.status]
+  const statusLabel = getWorkerStatusLabel(order.status)
   return (
-    <main className={`min-h-screen ${worker ? 'pb-28' : 'pb-10 sm:pb-16'}`}>
+    <main className={`min-h-screen ${worker || order.status === 'completed' ? 'pb-28' : 'pb-10 sm:pb-16'}`}>
       <header className="border-b border-border bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-14 max-w-md items-center justify-between px-4 sm:h-16 sm:px-5">
           <Link href="/" aria-label="DomTrack — на главную" className="inline-flex min-h-11 items-center">
@@ -99,6 +98,12 @@ export function ConfirmedOrderCard({
               <h2 className="mb-5 font-display text-base font-semibold text-foreground">Ход работы</h2>
               <OrderTimeline status={order.status} />
             </section>
+            {order.status === 'accepted' && (
+              <section className="rounded-2xl border border-primary/20 bg-accent p-5 text-center sm:p-6">
+                <p className="font-display text-lg font-semibold text-accent-foreground">{CLIENT_ACCEPTED_TITLE}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{CLIENT_ACCEPTED_MESSAGE}</p>
+              </section>
+            )}
           </>
         )}
         {children}

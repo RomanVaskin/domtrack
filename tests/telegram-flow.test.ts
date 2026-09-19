@@ -18,7 +18,7 @@ import type {
 class MemoryStore implements SessionStore {
   sessions = new Map<string, TelegramSession>()
   orders: Array<NewOrder & CreatedOrder & {
-    status: 'new' | 'confirmed' | 'assigned' | 'on_the_way' | 'in_progress' | 'completed' | 'rejected'
+    status: 'new' | 'confirmed' | 'assigned' | 'on_the_way' | 'in_progress' | 'completed' | 'accepted' | 'rejected'
     clientToken?: string
     workerToken?: string
     workerName?: string

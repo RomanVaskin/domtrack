@@ -111,7 +111,7 @@ export class PostgresSessionStore implements SessionStore {
         const order = rows[0]
         if (!order) return { kind: 'not_found' } as const
         if (order.status === 'rejected') return { kind: 'rejected' } as const
-        if (['confirmed', 'assigned', 'on_the_way', 'in_progress', 'completed'].includes(String(order.status))) {
+        if (['confirmed', 'assigned', 'on_the_way', 'in_progress', 'completed', 'accepted'].includes(String(order.status))) {
           if (!order.client_token || !order.worker_token) return { kind: 'error' } as const
           return confirmedResult(order)
         }
@@ -147,7 +147,7 @@ export class PostgresSessionStore implements SessionStore {
         `
         const order = rows[0]
         if (!order) return { kind: 'not_found' } as const
-        if (['confirmed', 'assigned', 'on_the_way', 'in_progress', 'completed'].includes(String(order.status))) {
+        if (['confirmed', 'assigned', 'on_the_way', 'in_progress', 'completed', 'accepted'].includes(String(order.status))) {
           return { kind: 'confirmed' } as const
         }
         if (order.status !== 'new' && order.status !== 'rejected') return { kind: 'error' } as const
@@ -183,7 +183,7 @@ export class PostgresSessionStore implements SessionStore {
         const order = rows[0]
         if (!order) return { kind: 'not_found' } as const
         if (order.status === 'rejected') return { kind: 'rejected' } as const
-        if (['assigned', 'on_the_way', 'in_progress', 'completed'].includes(String(order.status))) {
+        if (['assigned', 'on_the_way', 'in_progress', 'completed', 'accepted'].includes(String(order.status))) {
           return assignedResult(order)
         }
         if (order.status !== 'confirmed') return { kind: 'not_confirmed' } as const

@@ -2,8 +2,13 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { loadPublicOrder } from '../lib/public-orders.ts'
 import {
+  CLIENT_ACCEPT_ACTION_LABEL,
+  CLIENT_ACCEPTED_MESSAGE,
+  CLIENT_ACCEPTED_TITLE,
   getOrderTimeline,
   getWorkerActionPresentation,
+  getWorkerStatusLabel,
+  showClientAcceptance,
   showClientPhotoReport,
   showWorkerPhotoReport,
 } from '../lib/order-presentation.ts'
@@ -27,6 +32,7 @@ const firstRow = {
   on_the_way_at: null,
   started_at: null,
   completed_at: null,
+  accepted_at: null,
   photos: [
     { id: '11111111-1111-1111-1111-111111111111', kind: 'before' },
     { id: '22222222-2222-2222-2222-222222222222', kind: 'after' },
@@ -68,10 +74,11 @@ describe('tracker presentation', () => {
     ['on_the_way', 2],
     ['in_progress', 3],
     ['completed', 4],
+    ['accepted', 5],
   ] as const) {
     test(`${status} highlights the correct timeline step`, () => {
       const timeline = getOrderTimeline(status)
-      assert.equal(timeline[activeIndex].state, status === 'completed' ? 'final' : 'current')
+      assert.equal(timeline[activeIndex].state, status === 'accepted' ? 'final' : 'current')
       assert.ok(timeline.slice(0, activeIndex).every((step) => step.state === 'done'))
       assert.ok(timeline.slice(activeIndex + 1).every((step) => step.state === 'todo'))
     })
@@ -83,6 +90,18 @@ describe('tracker presentation', () => {
     assert.equal(getWorkerActionPresentation('on_the_way')?.label, 'Начать работу')
     assert.equal(getWorkerActionPresentation('in_progress')?.label, 'Завершить работу')
     assert.equal(getWorkerActionPresentation('completed'), null)
+    assert.equal(getWorkerActionPresentation('accepted'), null)
+  })
+
+  test('acceptance action and worker final status are presented only where intended', () => {
+    assert.equal(showClientAcceptance('completed'), true)
+    assert.equal(showClientAcceptance('accepted'), false)
+    assert.equal(showClientAcceptance('in_progress'), false)
+    assert.equal(CLIENT_ACCEPT_ACTION_LABEL, 'Принять работу')
+    assert.equal(CLIENT_ACCEPTED_TITLE, 'Работа принята')
+    assert.equal(CLIENT_ACCEPTED_MESSAGE, 'Спасибо! Работа завершена и принята.')
+    assert.equal(getWorkerStatusLabel('completed'), 'Работа завершена')
+    assert.equal(getWorkerStatusLabel('accepted'), 'Работа принята клиентом')
   })
 
   test('photo report visibility follows the flag and lifecycle', () => {
@@ -92,6 +111,7 @@ describe('tracker presentation', () => {
     assert.equal(showWorkerPhotoReport(true, 'on_the_way'), false)
     assert.equal(showWorkerPhotoReport(true, 'in_progress'), true)
     assert.equal(showWorkerPhotoReport(true, 'completed'), true)
+    assert.equal(showWorkerPhotoReport(true, 'accepted'), true)
     assert.equal(showWorkerPhotoReport(false, 'in_progress'), false)
   })
 })
