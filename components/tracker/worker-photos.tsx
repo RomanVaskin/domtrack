@@ -5,10 +5,12 @@ import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { PhotoGroup } from './order-photo-gallery'
 import { PhotoViewer } from './photo-viewer'
-import { uploadOrderPhoto } from '@/lib/photo-upload'
+import {
+  photoUploadMessage,
+  takeSelectedPhotoFiles,
+  uploadOrderPhotos,
+} from '@/lib/photo-upload'
 import type { OrderPhoto, OrderPhotoKind, TrackableOrderStatus } from '@/lib/public-orders'
-
-const ACCEPTED_IMAGES = 'image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,.heic,.heif'
 
 export function WorkerPhotos({
   token,
@@ -32,17 +34,16 @@ export function WorkerPhotos({
     input.current?.click()
   }
 
-  async function upload(files: FileList) {
+  async function upload(files: readonly File[]) {
     const kind = target.current
     setUploading(kind)
     setError(null)
     try {
-      for (const file of Array.from(files)) {
-        const photo = await uploadOrderPhoto(file, token, kind)
+      await uploadOrderPhotos(files, token, kind, (photo) => {
         setPhotos((current) => [...current, photo])
-      }
+      })
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : 'Не удалось загрузить фото')
+      setError(photoUploadMessage(uploadError))
     } finally {
       setUploading(null)
     }
@@ -81,14 +82,13 @@ export function WorkerPhotos({
           <input
             ref={input}
             type="file"
-            accept={ACCEPTED_IMAGES}
+            accept="image/*"
             multiple
             className="hidden"
             aria-label="Выбрать фото"
             onChange={(event) => {
-              const files = event.target.files
-              event.target.value = ''
-              if (files?.length) void upload(files)
+              const files = takeSelectedPhotoFiles(event.currentTarget)
+              if (files.length) void upload(files)
             }}
           />
         )}

@@ -10,6 +10,21 @@ export function photoUploadError(status: number) {
       : 'Не удалось загрузить фото'
 }
 
+export function photoUploadMessage(error: unknown) {
+  return error instanceof Error
+    && ['Фото слишком большое', 'Формат фото не поддерживается'].includes(error.message)
+    ? error.message
+    : 'Не удалось загрузить фото'
+}
+
+export function takeSelectedPhotoFiles(
+  input: Pick<HTMLInputElement, 'files' | 'value'>,
+): File[] {
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  return files
+}
+
 export async function uploadOrderPhoto(
   file: File,
   workerToken: string,
@@ -28,4 +43,15 @@ export async function uploadOrderPhoto(
   })
   if (!response.ok) throw new Error(photoUploadError(response.status))
   return await response.json() as OrderPhoto
+}
+
+export async function uploadOrderPhotos(
+  files: readonly File[],
+  workerToken: string,
+  kind: OrderPhotoKind,
+  onUploaded: (photo: OrderPhoto) => void,
+) {
+  for (const file of files) {
+    onUploaded(await uploadOrderPhoto(file, workerToken, kind))
+  }
 }
