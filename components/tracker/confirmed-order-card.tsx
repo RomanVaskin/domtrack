@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { CalendarDays, Clock, MapPin, Phone } from 'lucide-react'
 import { Logo } from '@/components/logo'
+import { formatRequestedDate } from '@/lib/format-requested-date'
 import type { PublicOrder } from '@/lib/orders'
 import { formatServiceParameters, SERVICE_LABELS } from '@/lib/telegram/flow'
 
@@ -32,7 +33,7 @@ export function ConfirmedOrderCard({
             {SERVICE_LABELS[order.serviceType]}
           </h1>
           <div className="mt-5 space-y-3 text-sm text-muted-foreground">
-            <Detail icon={<CalendarDays className="size-4" />} text={formatDate(order.requestedDate)} />
+            <Detail icon={<CalendarDays className="size-4" />} text={formatRequestedDate(order.requestedDate)} />
             <Detail icon={<Clock className="size-4" />} text={order.requestedTime} />
             <Detail icon={<MapPin className="size-4" />} text={order.address} />
             {worker && order.clientPhone && (
@@ -84,11 +85,4 @@ export function ConfirmedOrderCard({
 
 function Detail({ icon, text }: { icon: React.ReactNode; text: string }) {
   return <div className="flex items-start gap-3">{icon}<span className="text-foreground">{text}</span></div>
-}
-
-function formatDate(value: string): string {
-  const [year, month, day] = value.split('-').map(Number)
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
-  }).format(new Date(Date.UTC(year, month - 1, day)))
 }
