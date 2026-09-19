@@ -80,11 +80,11 @@ export class TelegramOrderFlow {
     const callback = update.callback_query
     if (!callback?.message || !callback.data) return
 
-    const adminAction = callback.data.match(/^a:(c|r):(\d+)$/)
+    const adminAction = callback.data.match(/^a:(c|r|a):(\d+)$/)
     if (adminAction) {
       await this.handleAdminCallback(
         callback,
-        adminAction[1] === 'c' ? 'confirm' : 'reject',
+        adminAction[1] === 'c' ? 'confirm' : adminAction[1] === 'a' ? 'assign' : 'reject',
         adminAction[2],
       )
       return
@@ -181,7 +181,7 @@ export class TelegramOrderFlow {
 
   private async handleAdminCallback(
     callback: NonNullable<TelegramUpdate['callback_query']>,
-    action: 'confirm' | 'reject',
+    action: 'confirm' | 'assign' | 'reject',
     orderId: string,
   ): Promise<void> {
     const message = callback.message
@@ -207,6 +207,9 @@ export class TelegramOrderFlow {
       await this.safeAnswerCallback(callback.id, 'Заявка подтверждена.')
       const adminText = `✅ Заявка ${result.orderNumber} подтверждена.\n\n`
         + `Клиент:\n${clientUrl}\n\nИсполнитель:\n${workerUrl}`
+      const assignmentButton = {
+        inline_keyboard: [[{ text: 'Назначить исполнителя', callback_data: `a:a:${orderId}` }]],
+      }
       const deliveries: Promise<void>[] = [
         this.bot.sendMessage(
           result.clientChatId,
@@ -215,12 +218,40 @@ export class TelegramOrderFlow {
             + 'Здесь вы сможете следить за исполнителем и ходом работы.',
         ),
         message.message_id === undefined
-          ? this.bot.sendMessage(adminChatId, adminText)
-          : this.bot.editMessageText(adminChatId, message.message_id, adminText, { inline_keyboard: [] }),
+          ? this.bot.sendMessage(adminChatId, adminText, assignmentButton)
+          : this.bot.editMessageText(adminChatId, message.message_id, adminText, assignmentButton),
       ]
       const outcomes = await Promise.allSettled(deliveries)
       if (outcomes.some((outcome) => outcome.status === 'rejected')) {
         console.warn('[telegram-webhook] Confirmation notification failed')
+      }
+      return
+    }
+
+    if (action === 'assign') {
+      const result = await this.store.assignOrder(orderId)
+      if (result.kind === 'rejected') {
+        await this.safeAnswerCallback(callback.id, 'Заявка уже отклонена.')
+        return
+      }
+      if (result.kind === 'not_confirmed') {
+        await this.safeAnswerCallback(callback.id, 'Сначала подтвердите заявку.')
+        return
+      }
+      if (result.kind !== 'assigned') {
+        await this.safeAnswerCallback(callback.id, 'Заявка не найдена.')
+        return
+      }
+
+      const clientUrl = domTrackUrl(`/o/${encodeURIComponent(result.clientToken)}`)
+      const workerUrl = domTrackUrl(`/worker/${encodeURIComponent(result.workerToken)}`)
+      await this.safeAnswerCallback(callback.id, 'Исполнитель назначен.')
+      const adminText = `👷 Заявка ${result.orderNumber}: исполнитель назначен.\n\n`
+        + `Клиент:\n${clientUrl}\n\nИсполнитель:\n${workerUrl}`
+      if (message.message_id === undefined) {
+        await this.bot.sendMessage(adminChatId, adminText)
+      } else {
+        await this.bot.editMessageText(adminChatId, message.message_id, adminText, { inline_keyboard: [] })
       }
       return
     }

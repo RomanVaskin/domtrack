@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { CalendarDays, Clock, MapPin, Phone } from 'lucide-react'
 import { Logo } from '@/components/logo'
+import { OrderTimeline } from '@/components/tracker/order-timeline'
 import { formatRequestedDate } from '@/lib/format-requested-date'
 import type { PublicOrder } from '@/lib/orders'
 import { formatServiceParameters, SERVICE_LABELS } from '@/lib/telegram/flow'
@@ -13,8 +14,15 @@ export function ConfirmedOrderCard({
   worker?: boolean
 }) {
   const parameters = formatServiceParameters(order.serviceType, order.parameters)
+  const statusLabel = {
+    confirmed: 'Ожидает назначения',
+    assigned: 'Исполнитель назначен',
+    on_the_way: 'Исполнитель в пути',
+    in_progress: 'Работа начата',
+    completed: 'Работа завершена',
+  }[order.status]
   return (
-    <main className="min-h-screen pb-10 sm:pb-16">
+    <main className={`min-h-screen ${worker ? 'pb-28' : 'pb-10 sm:pb-16'}`}>
       <header className="border-b border-border bg-background/80 backdrop-blur-md">
         <div className="mx-auto flex h-14 max-w-md items-center justify-between px-4 sm:h-16 sm:px-5">
           <Link href="/" aria-label="DomTrack — на главную" className="inline-flex min-h-11 items-center">
@@ -39,10 +47,6 @@ export function ConfirmedOrderCard({
             {worker && order.clientPhone && (
               <Detail icon={<Phone className="size-4" />} text={order.clientPhone} />
             )}
-          </div>
-          <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
-            <span className="text-sm text-muted-foreground">Стоимость</span>
-            <span className="text-sm font-semibold text-foreground">после подтверждения</span>
           </div>
         </section>
 
@@ -72,12 +76,29 @@ export function ConfirmedOrderCard({
           </section>
         )}
 
-        <section className="rounded-2xl border border-primary/20 bg-accent p-5 text-center sm:p-6">
-          <span className="inline-flex items-center gap-2 text-sm font-semibold text-accent-foreground">
-            <span className="size-2 rounded-full bg-primary" />
-            {worker ? 'Статус: заказ подтверждён' : 'Заказ подтверждён'}
-          </span>
-        </section>
+        {worker ? (
+          <section className="rounded-2xl border border-primary/20 bg-accent p-5 text-center sm:p-6">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Текущий статус</p>
+            <span className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-accent-foreground">
+              <span className="size-2 rounded-full bg-primary" />
+              {statusLabel}
+            </span>
+          </section>
+        ) : (
+          <>
+            {order.workerName && (
+              <section className="rounded-2xl border border-border bg-card px-5 py-4 sm:px-6">
+                <p className="text-sm text-muted-foreground">
+                  Исполнитель: <span className="font-semibold text-foreground">{order.workerName}</span>
+                </p>
+              </section>
+            )}
+            <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
+              <h2 className="mb-5 font-display text-base font-semibold text-foreground">Ход работы</h2>
+              <OrderTimeline status={order.status} />
+            </section>
+          </>
+        )}
       </div>
     </main>
   )

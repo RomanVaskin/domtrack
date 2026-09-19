@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import postgres, { type Sql, type TransactionSql } from 'postgres'
 import type {
+  AssignOrderResult,
   ConfirmOrderResult,
   CreatedOrder,
   NewOrder,
@@ -110,7 +111,7 @@ export class PostgresSessionStore implements SessionStore {
         const order = rows[0]
         if (!order) return { kind: 'not_found' } as const
         if (order.status === 'rejected') return { kind: 'rejected' } as const
-        if (order.status === 'confirmed') {
+        if (['confirmed', 'assigned', 'on_the_way', 'in_progress', 'completed'].includes(String(order.status))) {
           if (!order.client_token || !order.worker_token) return { kind: 'error' } as const
           return confirmedResult(order)
         }
@@ -146,7 +147,9 @@ export class PostgresSessionStore implements SessionStore {
         `
         const order = rows[0]
         if (!order) return { kind: 'not_found' } as const
-        if (order.status === 'confirmed') return { kind: 'confirmed' } as const
+        if (['confirmed', 'assigned', 'on_the_way', 'in_progress', 'completed'].includes(String(order.status))) {
+          return { kind: 'confirmed' } as const
+        }
         if (order.status !== 'new' && order.status !== 'rejected') return { kind: 'error' } as const
 
         if (order.status === 'new') {
@@ -162,6 +165,41 @@ export class PostgresSessionStore implements SessionStore {
           clientChatId: String(order.telegram_chat_id),
         } as const
       }) as RejectOrderResult
+    } catch {
+      return { kind: 'error' }
+    }
+  }
+
+  async assignOrder(orderId: string): Promise<AssignOrderResult> {
+    if (!/^\d+$/.test(orderId)) return { kind: 'not_found' }
+    try {
+      return await getDatabase().begin(async (sql) => {
+        const rows = await sql`
+          SELECT id, number, status, client_token, worker_token, worker_name
+          FROM orders
+          WHERE id = ${orderId}::bigint
+          FOR UPDATE
+        `
+        const order = rows[0]
+        if (!order) return { kind: 'not_found' } as const
+        if (order.status === 'rejected') return { kind: 'rejected' } as const
+        if (['assigned', 'on_the_way', 'in_progress', 'completed'].includes(String(order.status))) {
+          return assignedResult(order)
+        }
+        if (order.status !== 'confirmed') return { kind: 'not_confirmed' } as const
+        if (!order.client_token || !order.worker_token) return { kind: 'error' } as const
+
+        const updated = await sql`
+          UPDATE orders
+          SET status = 'assigned',
+              worker_name = COALESCE(worker_name, 'Исполнитель'),
+              assigned_at = COALESCE(assigned_at, now())
+          WHERE id = ${orderId}::bigint AND status = 'confirmed'
+          RETURNING number, client_token, worker_token, worker_name
+        `
+        if (!updated[0]) return { kind: 'error' } as const
+        return assignedResult(updated[0])
+      }) as AssignOrderResult
     } catch {
       return { kind: 'error' }
     }
@@ -232,5 +270,15 @@ function confirmedResult(row: Record<string, unknown>): Extract<ConfirmOrderResu
     clientChatId: String(row.telegram_chat_id),
     clientToken: String(row.client_token),
     workerToken: String(row.worker_token),
+  }
+}
+
+function assignedResult(row: Record<string, unknown>): Extract<AssignOrderResult, { kind: 'assigned' }> {
+  return {
+    kind: 'assigned',
+    orderNumber: String(row.number),
+    clientToken: String(row.client_token),
+    workerToken: String(row.worker_token),
+    workerName: String(row.worker_name),
   }
 }

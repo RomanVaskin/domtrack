@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { TelegramOrderFlow } from '../lib/telegram/flow.ts'
 import type {
+  AssignOrderResult,
   BotApi,
   ConfirmOrderResult,
   CreatedOrder,
@@ -17,9 +18,10 @@ import type {
 class MemoryStore implements SessionStore {
   sessions = new Map<string, TelegramSession>()
   orders: Array<NewOrder & CreatedOrder & {
-    status: 'new' | 'confirmed' | 'rejected'
+    status: 'new' | 'confirmed' | 'assigned' | 'on_the_way' | 'in_progress' | 'completed' | 'rejected'
     clientToken?: string
     workerToken?: string
+    workerName?: string
   }> = []
   private locks = new Map<string, Promise<void>>()
   private orderLocks = new Map<string, Promise<void>>()
@@ -93,9 +95,27 @@ class MemoryStore implements SessionStore {
     return this.withOrderLock(orderId, async () => {
       const order = this.orders.find((item) => item.id === orderId)
       if (!order) return { kind: 'not_found' }
-      if (order.status === 'confirmed') return { kind: 'confirmed' }
+      if (order.status !== 'new' && order.status !== 'rejected') return { kind: 'confirmed' }
       order.status = 'rejected'
       return { kind: 'rejected', orderNumber: order.number, clientChatId: order.telegramChatId }
+    })
+  }
+
+  async assignOrder(orderId: string): Promise<AssignOrderResult> {
+    return this.withOrderLock(orderId, async () => {
+      const order = this.orders.find((item) => item.id === orderId)
+      if (!order) return { kind: 'not_found' }
+      if (order.status === 'rejected') return { kind: 'rejected' }
+      if (order.status === 'new') return { kind: 'not_confirmed' }
+      order.status = 'assigned'
+      order.workerName ??= 'Исполнитель'
+      return {
+        kind: 'assigned',
+        orderNumber: order.number,
+        clientToken: order.clientToken!,
+        workerToken: order.workerToken!,
+        workerName: order.workerName,
+      }
     })
   }
 
@@ -493,12 +513,36 @@ describe('Telegram order flow', () => {
       assert.deepEqual([order.clientToken, order.workerToken], tokens)
       assert.match(h.bot.edits.at(-1)?.text ?? '', new RegExp(`/o/${order.clientToken}`))
       assert.match(h.bot.edits.at(-1)?.text ?? '', new RegExp(`/worker/${order.workerToken}`))
+      assert.equal(
+        h.bot.edits.at(-1)?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data,
+        'a:a:1',
+      )
       assert.ok(!h.bot.messages.find((message) => message.chatId === '42')?.text.includes('/worker/'))
     } finally {
       if (previousAdmin === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
       else process.env.TELEGRAM_ADMIN_CHAT_ID = previousAdmin
       if (previousBase === undefined) delete process.env.DOMTRACK_BASE_URL
       else process.env.DOMTRACK_BASE_URL = previousBase
+    }
+  })
+
+  test('admin assigns a confirmed order idempotently', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      await adminCallback(h, 'a:c:1', '99', 'confirm')
+      await adminCallback(h, 'a:a:1', '99', 'assign-1')
+      await adminCallback(h, 'a:a:1', '99', 'assign-2')
+      assert.equal(h.store.orders[0].status, 'assigned')
+      assert.equal(h.store.orders[0].workerName, 'Исполнитель')
+      assert.equal(h.bot.answeredCallbacks.at(-1)?.text, 'Исполнитель назначен.')
+      assert.match(h.bot.edits.at(-1)?.text ?? '', /исполнитель назначен/i)
+      assert.deepEqual(h.bot.edits.at(-1)?.replyMarkup?.inline_keyboard, [])
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
     }
   })
 

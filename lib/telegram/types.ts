@@ -80,6 +80,16 @@ export type RejectOrderResult =
   | { kind: 'rejected'; orderNumber: string; clientChatId: string }
   | { kind: 'confirmed' | 'not_found' | 'error' }
 
+export type AssignOrderResult =
+  | {
+      kind: 'assigned'
+      orderNumber: string
+      clientToken: string
+      workerToken: string
+      workerName: string
+    }
+  | { kind: 'rejected' | 'not_confirmed' | 'not_found' | 'error' }
+
 export interface SessionStore {
   withChatLock<T>(
     chatId: string,
@@ -87,6 +97,7 @@ export interface SessionStore {
   ): Promise<T>
   findOrderBySessionId(sessionId: string): Promise<CreatedOrder | null>
   confirmOrder(orderId: string): Promise<ConfirmOrderResult>
+  assignOrder(orderId: string): Promise<AssignOrderResult>
   rejectOrder(orderId: string): Promise<RejectOrderResult>
 }
 

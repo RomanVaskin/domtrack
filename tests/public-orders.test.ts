@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { loadPublicOrder } from '../lib/public-orders.ts'
+import { getOrderTimeline, getWorkerActionPresentation } from '../lib/order-presentation.ts'
 
 const firstToken = 'a'.repeat(32)
 const secondToken = 'b'.repeat(32)
@@ -14,6 +15,13 @@ const firstRow = {
   photo_report_enabled: true,
   parameters: { lawn_area: 600 },
   comment: null,
+  status: 'confirmed',
+  worker_name: null,
+  confirmed_at: '2026-09-19T09:00:00.000Z',
+  assigned_at: null,
+  on_the_way_at: null,
+  started_at: null,
+  completed_at: null,
 }
 const secondRow = { ...firstRow, number: 'DT-000002', address: 'Второй адрес' }
 
@@ -37,5 +45,30 @@ describe('public order token access', () => {
     assert.equal(await loadPublicOrder('invalid', async () => { queried = true; return firstRow }), null)
     assert.equal(queried, false)
     assert.equal(await loadPublicOrder('x'.repeat(32), async () => null), null)
+  })
+})
+
+describe('tracker presentation', () => {
+  for (const [status, activeIndex] of [
+    ['confirmed', 0],
+    ['assigned', 1],
+    ['on_the_way', 2],
+    ['in_progress', 3],
+    ['completed', 4],
+  ] as const) {
+    test(`${status} highlights the correct timeline step`, () => {
+      const timeline = getOrderTimeline(status)
+      assert.equal(timeline[activeIndex].state, status === 'completed' ? 'final' : 'current')
+      assert.ok(timeline.slice(0, activeIndex).every((step) => step.state === 'done'))
+      assert.ok(timeline.slice(activeIndex + 1).every((step) => step.state === 'todo'))
+    })
+  }
+
+  test('worker actions match only the current actionable status', () => {
+    assert.equal(getWorkerActionPresentation('confirmed'), null)
+    assert.equal(getWorkerActionPresentation('assigned')?.label, 'Выехал')
+    assert.equal(getWorkerActionPresentation('on_the_way')?.label, 'Начать работу')
+    assert.equal(getWorkerActionPresentation('in_progress')?.label, 'Завершить работу')
+    assert.equal(getWorkerActionPresentation('completed'), null)
   })
 })
