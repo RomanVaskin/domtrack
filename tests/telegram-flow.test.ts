@@ -3,8 +3,10 @@ import { describe, test } from 'node:test'
 import { TelegramOrderFlow } from '../lib/telegram/flow.ts'
 import type {
   BotApi,
+  ConfirmOrderResult,
   CreatedOrder,
   NewOrder,
+  RejectOrderResult,
   ReplyMarkup,
   SessionStore,
   SessionTransaction,
@@ -14,8 +16,13 @@ import type {
 
 class MemoryStore implements SessionStore {
   sessions = new Map<string, TelegramSession>()
-  orders: Array<NewOrder & CreatedOrder> = []
+  orders: Array<NewOrder & CreatedOrder & {
+    status: 'new' | 'confirmed' | 'rejected'
+    clientToken?: string
+    workerToken?: string
+  }> = []
   private locks = new Map<string, Promise<void>>()
+  private orderLocks = new Map<string, Promise<void>>()
 
   async withChatLock<T>(
     chatId: string,
@@ -46,6 +53,7 @@ class MemoryStore implements SessionStore {
             ...structuredClone(order),
             id: String(this.orders.length + 1),
             number: `DT-${String(this.orders.length + 1).padStart(6, '0')}`,
+            status: 'new' as const,
           }
           this.orders.push(created)
           return created
@@ -60,18 +68,69 @@ class MemoryStore implements SessionStore {
   async findOrderBySessionId(sessionId: string): Promise<CreatedOrder | null> {
     return this.orders.find((item) => item.sourceSessionId === sessionId) ?? null
   }
+
+  async confirmOrder(orderId: string): Promise<ConfirmOrderResult> {
+    return this.withOrderLock(orderId, async () => {
+      const order = this.orders.find((item) => item.id === orderId)
+      if (!order) return { kind: 'not_found' }
+      if (order.status === 'rejected') return { kind: 'rejected' }
+      if (order.status === 'new') {
+        order.status = 'confirmed'
+        order.clientToken = `client${order.id}`.padEnd(32, 'c')
+        order.workerToken = `worker${order.id}`.padEnd(32, 'w')
+      }
+      return {
+        kind: 'confirmed',
+        orderNumber: order.number,
+        clientChatId: order.telegramChatId,
+        clientToken: order.clientToken!,
+        workerToken: order.workerToken!,
+      }
+    })
+  }
+
+  async rejectOrder(orderId: string): Promise<RejectOrderResult> {
+    return this.withOrderLock(orderId, async () => {
+      const order = this.orders.find((item) => item.id === orderId)
+      if (!order) return { kind: 'not_found' }
+      if (order.status === 'confirmed') return { kind: 'confirmed' }
+      order.status = 'rejected'
+      return { kind: 'rejected', orderNumber: order.number, clientChatId: order.telegramChatId }
+    })
+  }
+
+  private async withOrderLock<T>(orderId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.orderLocks.get(orderId) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => { release = resolve })
+    this.orderLocks.set(orderId, previous.then(() => current))
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+    }
+  }
 }
 
 class FakeBot implements BotApi {
   messages: Array<{ chatId: string; text: string; replyMarkup?: ReplyMarkup }> = []
-  answeredCallbacks: string[] = []
+  edits: Array<{ chatId: string; messageId: number; text: string; replyMarkup?: ReplyMarkup }> = []
+  answeredCallbacks: Array<{ id: string; text?: string }> = []
+  failChatId?: string
 
   async sendMessage(chatId: string, text: string, replyMarkup?: ReplyMarkup) {
+    if (chatId === this.failChatId) throw new Error('Telegram unavailable')
     this.messages.push({ chatId, text, replyMarkup })
   }
 
-  async answerCallbackQuery(callbackQueryId: string) {
-    this.answeredCallbacks.push(callbackQueryId)
+  async answerCallbackQuery(callbackQueryId: string, text?: string) {
+    this.answeredCallbacks.push({ id: callbackQueryId, text })
+  }
+
+  async editMessageText(chatId: string, messageId: number, text: string, replyMarkup?: ReplyMarkup) {
+    if (chatId === this.failChatId) throw new Error('Telegram unavailable')
+    this.edits.push({ chatId, messageId, text, replyMarkup })
   }
 }
 
@@ -115,7 +174,7 @@ function harness() {
           id: `callback-${++callbackId}`,
           from: { username: 'roman' },
           data,
-          message: { chat: { id: chatId } },
+          message: { message_id: callbackId, chat: { id: chatId } },
         },
       }
       return flow.handleUpdate(update)
@@ -152,6 +211,29 @@ async function completeCommon(h: ReturnType<typeof harness>, useContact = false)
   await h.callback(submitData)
   assert.equal(h.store.sessions.has(h.chatId), false)
   return h.store.orders.at(-1)!
+}
+
+async function createHouseOrder(h: ReturnType<typeof harness>) {
+  await selectService(h, 'house_cleaning')
+  await h.message('180')
+  await h.callback('floors:2')
+  return completeCommon(h)
+}
+
+function adminCallback(
+  h: ReturnType<typeof harness>,
+  data: string,
+  chatId = '99',
+  callbackId = `admin-${Math.random()}`,
+) {
+  return h.flow.handleUpdate({
+    callback_query: {
+      id: callbackId,
+      from: { username: 'admin' },
+      data,
+      message: { message_id: 77, chat: { id: chatId } },
+    },
+  })
 }
 
 describe('Telegram order flow', () => {
@@ -344,5 +426,133 @@ describe('Telegram order flow', () => {
     await h.callback('service:toString')
     assert.equal(h.store.sessions.get(h.chatId)?.state, 'awaiting_service')
     assert.match(h.bot.messages.at(-1)?.text ?? '', /не актуален/)
+  })
+
+  test('/myid returns only the Telegram chat id', async () => {
+    const h = harness()
+    await h.message('/myid')
+    assert.equal(h.bot.messages.at(-1)?.text, 'Ваш Telegram chat_id: 42')
+    assert.equal(h.store.sessions.size, 0)
+  })
+
+  test('a new order sends a complete admin notification with actions', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      const notification = h.bot.messages.find((message) => message.chatId === '99')
+      assert.match(notification?.text ?? '', /🧹 Новая заявка DT-000001/)
+      assert.match(notification?.text ?? '', /Услуга: Уборка дома/)
+      assert.match(notification?.text ?? '', /Площадь: 180 м²/)
+      assert.match(notification?.text ?? '', /Стоимость: после подтверждения/)
+      assert.deepEqual(
+        notification?.replyMarkup?.inline_keyboard?.[0].map((button) => button.callback_data),
+        ['a:c:1', 'a:r:1'],
+      )
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('a non-admin callback does not read or change the order', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      await adminCallback(h, 'a:c:1', '42')
+      assert.equal(h.store.orders[0].status, 'new')
+      assert.equal(h.bot.answeredCallbacks.at(-1)?.text, 'Недоступно.')
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('confirm is idempotent and parallel callbacks keep the same two tokens', async () => {
+    const previousAdmin = process.env.TELEGRAM_ADMIN_CHAT_ID
+    const previousBase = process.env.DOMTRACK_BASE_URL
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    process.env.DOMTRACK_BASE_URL = 'https://domtrack.ru'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      await Promise.all([
+        adminCallback(h, 'a:c:1', '99', 'confirm-1'),
+        adminCallback(h, 'a:c:1', '99', 'confirm-2'),
+      ])
+      const order = h.store.orders[0]
+      const tokens = [order.clientToken, order.workerToken]
+      assert.equal(order.status, 'confirmed')
+      assert.equal(order.clientToken?.length, 32)
+      assert.equal(order.workerToken?.length, 32)
+      assert.notEqual(order.clientToken, order.workerToken)
+      await adminCallback(h, 'a:c:1', '99', 'confirm-3')
+      assert.deepEqual([order.clientToken, order.workerToken], tokens)
+      assert.match(h.bot.edits.at(-1)?.text ?? '', new RegExp(`/o/${order.clientToken}`))
+      assert.match(h.bot.edits.at(-1)?.text ?? '', new RegExp(`/worker/${order.workerToken}`))
+      assert.ok(!h.bot.messages.find((message) => message.chatId === '42')?.text.includes('/worker/'))
+    } finally {
+      if (previousAdmin === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previousAdmin
+      if (previousBase === undefined) delete process.env.DOMTRACK_BASE_URL
+      else process.env.DOMTRACK_BASE_URL = previousBase
+    }
+  })
+
+  test('reject is idempotent and rejected orders cannot be confirmed', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      await adminCallback(h, 'a:r:1', '99', 'reject-1')
+      await adminCallback(h, 'a:r:1', '99', 'reject-2')
+      assert.equal(h.store.orders[0].status, 'rejected')
+      await adminCallback(h, 'a:c:1', '99', 'confirm-rejected')
+      assert.equal(h.store.orders[0].status, 'rejected')
+      assert.equal(h.bot.answeredCallbacks.at(-1)?.text, 'Заявка уже отклонена.')
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('a confirmed order cannot be rejected', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      await adminCallback(h, 'a:c:1', '99')
+      await adminCallback(h, 'a:r:1', '99')
+      assert.equal(h.store.orders[0].status, 'confirmed')
+      assert.equal(h.bot.answeredCallbacks.at(-1)?.text, 'Заявка уже подтверждена.')
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('Telegram failure after confirm preserves the order and its tokens', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      h.bot.failChatId = '42'
+      await adminCallback(h, 'a:c:1', '99', 'failure-1')
+      const order = h.store.orders[0]
+      const tokens = [order.clientToken, order.workerToken]
+      assert.equal(order.status, 'confirmed')
+      await adminCallback(h, 'a:c:1', '99', 'failure-2')
+      assert.deepEqual([order.clientToken, order.workerToken], tokens)
+      assert.equal(h.store.orders.length, 1)
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
   })
 })

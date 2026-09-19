@@ -27,6 +27,20 @@ export class TelegramHttpApi implements BotApi {
     })
   }
 
+  async editMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    replyMarkup?: ReplyMarkup,
+  ): Promise<void> {
+    await this.call('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    })
+  }
+
   private async call(method: string, payload: Record<string, unknown>): Promise<void> {
     const response = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
       method: 'POST',

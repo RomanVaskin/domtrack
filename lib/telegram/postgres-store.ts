@@ -1,7 +1,10 @@
+import { randomBytes } from 'node:crypto'
 import postgres, { type Sql, type TransactionSql } from 'postgres'
 import type {
+  ConfirmOrderResult,
   CreatedOrder,
   NewOrder,
+  RejectOrderResult,
   SessionStore,
   SessionTransaction,
   TelegramSession,
@@ -9,7 +12,7 @@ import type {
 
 let database: Sql | undefined
 
-function getDatabase(): Sql {
+export function getDatabase(): Sql {
   if (database) return database
 
   const connectionString = process.env.DATABASE_URL
@@ -85,13 +88,83 @@ export class PostgresSessionStore implements SessionStore {
 
   async findOrderBySessionId(sessionId: string): Promise<CreatedOrder | null> {
     const rows = await getDatabase()`
-      SELECT id, number
+      SELECT id, number, telegram_chat_id, service_type, client_name,
+             client_phone, address, requested_date, requested_time,
+             photo_report_enabled, parameters, comment
       FROM orders
       WHERE source_session_id = ${sessionId}
     `
-    return rows[0]
-      ? { id: String(rows[0].id), number: String(rows[0].number) }
-      : null
+    return rows[0] ? mapCreatedOrder(rows[0]) : null
+  }
+
+  async confirmOrder(orderId: string): Promise<ConfirmOrderResult> {
+    if (!/^\d+$/.test(orderId)) return { kind: 'not_found' }
+    try {
+      return await getDatabase().begin(async (sql) => {
+        const rows = await sql`
+          SELECT id, number, telegram_chat_id, status, client_token, worker_token
+          FROM orders
+          WHERE id = ${orderId}::bigint
+          FOR UPDATE
+        `
+        const order = rows[0]
+        if (!order) return { kind: 'not_found' } as const
+        if (order.status === 'rejected') return { kind: 'rejected' } as const
+        if (order.status === 'confirmed') {
+          if (!order.client_token || !order.worker_token) return { kind: 'error' } as const
+          return confirmedResult(order)
+        }
+        if (order.status !== 'new') return { kind: 'error' } as const
+
+        const clientToken = randomBytes(24).toString('base64url')
+        const workerToken = randomBytes(24).toString('base64url')
+        const updated = await sql`
+          UPDATE orders
+          SET status = 'confirmed',
+              client_token = ${clientToken},
+              worker_token = ${workerToken},
+              confirmed_at = now()
+          WHERE id = ${orderId}::bigint
+          RETURNING number, telegram_chat_id, client_token, worker_token
+        `
+        return confirmedResult(updated[0])
+      }) as ConfirmOrderResult
+    } catch {
+      return { kind: 'error' }
+    }
+  }
+
+  async rejectOrder(orderId: string): Promise<RejectOrderResult> {
+    if (!/^\d+$/.test(orderId)) return { kind: 'not_found' }
+    try {
+      return await getDatabase().begin(async (sql) => {
+        const rows = await sql`
+          SELECT id, number, telegram_chat_id, status
+          FROM orders
+          WHERE id = ${orderId}::bigint
+          FOR UPDATE
+        `
+        const order = rows[0]
+        if (!order) return { kind: 'not_found' } as const
+        if (order.status === 'confirmed') return { kind: 'confirmed' } as const
+        if (order.status !== 'new' && order.status !== 'rejected') return { kind: 'error' } as const
+
+        if (order.status === 'new') {
+          await sql`
+            UPDATE orders
+            SET status = 'rejected', rejected_at = now()
+            WHERE id = ${orderId}::bigint
+          `
+        }
+        return {
+          kind: 'rejected',
+          orderNumber: String(order.number),
+          clientChatId: String(order.telegram_chat_id),
+        } as const
+      }) as RejectOrderResult
+    } catch {
+      return { kind: 'error' }
+    }
   }
 }
 
@@ -128,7 +201,36 @@ async function createOrder(sql: TransactionSql, order: NewOrder): Promise<Create
     )
     ON CONFLICT (source_session_id) DO UPDATE SET
       source_session_id = EXCLUDED.source_session_id
-    RETURNING id, number
+    RETURNING id, number, telegram_chat_id, service_type, client_name,
+              client_phone, address, requested_date, requested_time,
+              photo_report_enabled, parameters, comment
   `
-  return { id: String(rows[0].id), number: String(rows[0].number) }
+  return mapCreatedOrder(rows[0])
+}
+
+function mapCreatedOrder(row: Record<string, unknown>): CreatedOrder {
+  return {
+    id: String(row.id),
+    number: String(row.number),
+    telegramChatId: String(row.telegram_chat_id),
+    serviceType: String(row.service_type) as CreatedOrder['serviceType'],
+    clientName: String(row.client_name),
+    clientPhone: String(row.client_phone),
+    address: String(row.address),
+    requestedDate: String(row.requested_date),
+    requestedTime: String(row.requested_time),
+    photoReportEnabled: Boolean(row.photo_report_enabled),
+    parameters: row.parameters as CreatedOrder['parameters'],
+    ...(row.comment ? { comment: String(row.comment) } : {}),
+  }
+}
+
+function confirmedResult(row: Record<string, unknown>): Extract<ConfirmOrderResult, { kind: 'confirmed' }> {
+  return {
+    kind: 'confirmed',
+    orderNumber: String(row.number),
+    clientChatId: String(row.telegram_chat_id),
+    clientToken: String(row.client_token),
+    workerToken: String(row.worker_token),
+  }
 }

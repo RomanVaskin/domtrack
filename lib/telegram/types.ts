@@ -54,7 +54,31 @@ export interface NewOrder {
 export interface CreatedOrder {
   id: string
   number: string
+  telegramChatId: string
+  serviceType: ServiceType
+  clientName: string
+  clientPhone: string
+  address: string
+  requestedDate: string
+  requestedTime: string
+  photoReportEnabled: boolean
+  parameters: OrderParameters
+  comment?: string
 }
+
+export type ConfirmOrderResult =
+  | {
+      kind: 'confirmed'
+      orderNumber: string
+      clientChatId: string
+      clientToken: string
+      workerToken: string
+    }
+  | { kind: 'rejected' | 'not_found' | 'error' }
+
+export type RejectOrderResult =
+  | { kind: 'rejected'; orderNumber: string; clientChatId: string }
+  | { kind: 'confirmed' | 'not_found' | 'error' }
 
 export interface SessionStore {
   withChatLock<T>(
@@ -62,6 +86,8 @@ export interface SessionStore {
     operation: (transaction: SessionTransaction) => Promise<T>,
   ): Promise<T>
   findOrderBySessionId(sessionId: string): Promise<CreatedOrder | null>
+  confirmOrder(orderId: string): Promise<ConfirmOrderResult>
+  rejectOrder(orderId: string): Promise<RejectOrderResult>
 }
 
 export interface SessionTransaction {
@@ -91,6 +117,12 @@ export interface BotApi {
     replyMarkup?: ReplyMarkup,
   ): Promise<void>
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void>
+  editMessageText(
+    chatId: string,
+    messageId: number,
+    text: string,
+    replyMarkup?: ReplyMarkup,
+  ): Promise<void>
 }
 
 export interface TelegramUser {
@@ -98,6 +130,7 @@ export interface TelegramUser {
 }
 
 export interface TelegramMessage {
+  message_id?: number
   chat: { id: number | string }
   from?: TelegramUser
   text?: string
@@ -109,7 +142,7 @@ export interface TelegramCallbackQuery {
   id: string
   from: TelegramUser
   data?: string
-  message?: { chat: { id: number | string } }
+  message?: { message_id?: number; chat: { id: number | string } }
 }
 
 export interface TelegramUpdate {

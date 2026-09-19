@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types tests/*.test.ts"
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test:postgres": "node --conditions=react-server --experimental-strip-types tests/postgres-integration.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

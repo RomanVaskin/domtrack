@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { domTrackUrl } from '../domtrack-url.ts'
 import type {
   BotApi,
   CreatedOrder,
@@ -14,7 +15,7 @@ import type {
   TelegramUpdate,
 } from './types'
 
-const SERVICE_LABELS: Record<ServiceType, string> = {
+export const SERVICE_LABELS: Record<ServiceType, string> = {
   house_cleaning: 'Уборка дома',
   window_cleaning: 'Мойка окон',
   furniture_cleaning: 'Химчистка мебели',
@@ -79,7 +80,17 @@ export class TelegramOrderFlow {
     const callback = update.callback_query
     if (!callback?.message || !callback.data) return
 
-    await this.bot.answerCallbackQuery(callback.id)
+    const adminAction = callback.data.match(/^a:(c|r):(\d+)$/)
+    if (adminAction) {
+      await this.handleAdminCallback(
+        callback,
+        adminAction[1] === 'c' ? 'confirm' : 'reject',
+        adminAction[2],
+      )
+      return
+    }
+
+    await this.safeAnswerCallback(callback.id)
     const chatId = String(callback.message.chat.id)
     const callbackData = callback.data
     const result = callbackData.startsWith('submit:')
@@ -98,6 +109,10 @@ export class TelegramOrderFlow {
 
   private async handleMessage(message: TelegramMessage): Promise<void> {
     const chatId = String(message.chat.id)
+    if (message.text && /^\/myid(?:@\w+)?(?:\s|$)/i.test(message.text)) {
+      await this.bot.sendMessage(chatId, `Ваш Telegram chat_id: ${chatId}`)
+      return
+    }
     if (message.text && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text)) {
       const result = await this.store.withChatLock(chatId, async (transaction) => {
         const session = newSession(chatId, message.from?.username)
@@ -130,8 +145,111 @@ export class TelegramOrderFlow {
   }
 
   private async deliver(chatId: string, result: TransitionResult): Promise<void> {
-    for (const message of result.messages) {
-      await this.bot.sendMessage(chatId, message.text, message.replyMarkup)
+    const deliveries = result.messages.map((message) =>
+      this.bot.sendMessage(chatId, message.text, message.replyMarkup),
+    )
+    if (result.submittedOrder) {
+      deliveries.push(this.notifyAdminOfNewOrder(result.submittedOrder))
+    }
+    const outcomes = await Promise.allSettled(deliveries)
+    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+      console.warn('[telegram-webhook] Telegram notification failed')
+    }
+  }
+
+  private async notifyAdminOfNewOrder(order: CreatedOrder): Promise<void> {
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
+    if (!adminChatId) {
+      console.warn('[telegram-webhook] Admin chat is not configured')
+      return
+    }
+    await this.bot.sendMessage(adminChatId, buildAdminOrderText(order), {
+      inline_keyboard: [[
+        { text: '✅ Подтвердить', callback_data: `a:c:${order.id}` },
+        { text: '❌ Отклонить', callback_data: `a:r:${order.id}` },
+      ]],
+    })
+  }
+
+  private async safeAnswerCallback(callbackId: string, text?: string): Promise<void> {
+    try {
+      await this.bot.answerCallbackQuery(callbackId, text)
+    } catch {
+      console.warn('[telegram-webhook] Failed to acknowledge callback')
+    }
+  }
+
+  private async handleAdminCallback(
+    callback: NonNullable<TelegramUpdate['callback_query']>,
+    action: 'confirm' | 'reject',
+    orderId: string,
+  ): Promise<void> {
+    const message = callback.message
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
+    if (!message || !adminChatId || String(message.chat.id) !== adminChatId) {
+      await this.safeAnswerCallback(callback.id, 'Недоступно.')
+      return
+    }
+
+    if (action === 'confirm') {
+      const result = await this.store.confirmOrder(orderId)
+      if (result.kind === 'rejected') {
+        await this.safeAnswerCallback(callback.id, 'Заявка уже отклонена.')
+        return
+      }
+      if (result.kind !== 'confirmed') {
+        await this.safeAnswerCallback(callback.id, 'Заявка не найдена.')
+        return
+      }
+
+      const clientUrl = domTrackUrl(`/o/${encodeURIComponent(result.clientToken)}`)
+      const workerUrl = domTrackUrl(`/worker/${encodeURIComponent(result.workerToken)}`)
+      await this.safeAnswerCallback(callback.id, 'Заявка подтверждена.')
+      const adminText = `✅ Заявка ${result.orderNumber} подтверждена.\n\n`
+        + `Клиент:\n${clientUrl}\n\nИсполнитель:\n${workerUrl}`
+      const deliveries: Promise<void>[] = [
+        this.bot.sendMessage(
+          result.clientChatId,
+          `✅ Ваша заявка ${result.orderNumber} подтверждена.\n\n`
+            + `Персональная ссылка DomTrack:\n${clientUrl}\n\n`
+            + 'Здесь вы сможете следить за исполнителем и ходом работы.',
+        ),
+        message.message_id === undefined
+          ? this.bot.sendMessage(adminChatId, adminText)
+          : this.bot.editMessageText(adminChatId, message.message_id, adminText, { inline_keyboard: [] }),
+      ]
+      const outcomes = await Promise.allSettled(deliveries)
+      if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+        console.warn('[telegram-webhook] Confirmation notification failed')
+      }
+      return
+    }
+
+    const result = await this.store.rejectOrder(orderId)
+    if (result.kind === 'confirmed') {
+      await this.safeAnswerCallback(callback.id, 'Заявка уже подтверждена.')
+      return
+    }
+    if (result.kind !== 'rejected') {
+      await this.safeAnswerCallback(callback.id, 'Заявка не найдена.')
+      return
+    }
+
+    await this.safeAnswerCallback(callback.id, 'Заявка отклонена.')
+    const adminText = `❌ Заявка ${result.orderNumber} отклонена.`
+    const deliveries: Promise<void>[] = [
+      this.bot.sendMessage(
+        result.clientChatId,
+        `Заявка ${result.orderNumber} не подтверждена.\n\n`
+          + 'Если это произошло по ошибке, оформите новую заявку или свяжитесь с нами.',
+      ),
+      message.message_id === undefined
+        ? this.bot.sendMessage(adminChatId, adminText)
+        : this.bot.editMessageText(adminChatId, message.message_id, adminText, { inline_keyboard: [] }),
+    ]
+    const outcomes = await Promise.allSettled(deliveries)
+    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+      console.warn('[telegram-webhook] Rejection notification failed')
     }
   }
 
@@ -461,7 +579,9 @@ export class TelegramOrderFlow {
     const created = result ?? (await this.store.findOrderBySessionId(sessionId))
     if (!created) return restartResult()
     return {
-      submittedOrder: created,
+      // Only the callback that consumed the live session sends the admin notification.
+      // A replay still gets the same receipt without producing a duplicate admin card.
+      ...(result ? { submittedOrder: created } : {}),
       messages: [
         {
           text:
@@ -681,6 +801,57 @@ export function buildSummary(data: SessionData): string {
   if (data.comment) lines.push('', `Комментарий: ${data.comment}`)
   lines.push('', 'Стоимость: после подтверждения')
   return lines.join('\n')
+}
+
+export function buildAdminOrderText(order: CreatedOrder): string {
+  const lines = [
+    `🧹 Новая заявка ${order.number}`,
+    '',
+    `Услуга: ${SERVICE_LABELS[order.serviceType]}`,
+    '',
+    `Клиент: ${order.clientName}`,
+    `Телефон: ${order.clientPhone}`,
+    `Адрес: ${order.address}`,
+    '',
+    `Дата: ${formatRussianDate(order.requestedDate)}`,
+    `Время: ${order.requestedTime}`,
+    '',
+    `Фотоотчёт: ${order.photoReportEnabled ? 'Да' : 'Нет'}`,
+    '',
+    ...formatServiceParameters(order.serviceType, order.parameters),
+  ]
+  if (order.comment) lines.push('', `Комментарий: ${order.comment}`)
+  lines.push('', 'Стоимость: после подтверждения')
+  return lines.join('\n')
+}
+
+export function formatServiceParameters(
+  serviceType: ServiceType,
+  parameters: SessionData['parameters'],
+): string[] {
+  const p = parameters
+  switch (serviceType) {
+    case 'house_cleaning':
+      return [`Площадь: ${p.house_area} м²`, `Этажей: ${p.floors === 4 ? '4+' : p.floors}`]
+    case 'window_cleaning':
+      return [`Количество окон: ${p.windows_count}`, `Панорамные окна / сложное остекление: ${yesNo(p.panoramic_windows)}`]
+    case 'furniture_cleaning':
+      return [`Что почистить: ${p.furniture_description}`, `Фото мебели: ${photoCount(p)}`]
+    case 'lawn_mowing':
+      return [`Площадь: ${p.lawn_area} м²`, `Сбор травы: ${yesNo(p.collect_grass)}`, `Вывоз травы: ${yesNo(p.remove_grass)}`]
+    case 'snow_removal': {
+      const lines = [`Зона: ${p.snow_zone}`]
+      if (p.snow_zone_description) lines.push(`Описание: ${p.snow_zone_description}`)
+      lines.push(`Площадь: ${p.snow_area} м²`, `Вывоз снега: ${yesNo(p.remove_snow)}`)
+      return lines
+    }
+    case 'leaf_removal':
+      return [`Площадь: ${p.plot_area} м²`, `Сбор в мешки: ${yesNo(p.bag_leaves)}`, `Вывоз листьев: ${yesNo(p.remove_leaves)}`]
+    case 'pool_care':
+      return [`Описание: ${p.pool_description}`, `Фото бассейна: ${photoCount(p)}`]
+    case 'other':
+      return [`Описание: ${p.other_description}`, `Фото задачи: ${photoCount(p)}`]
+  }
 }
 
 function photoCount(parameters: SessionData['parameters']): string {
