@@ -37,6 +37,10 @@ const firstRow = {
     { id: '11111111-1111-1111-1111-111111111111', kind: 'before' },
     { id: '22222222-2222-2222-2222-222222222222', kind: 'after' },
   ],
+  checklist: [
+    { id: '2', title: 'Вымыть полы', position: 2, completed: false, completed_at: null },
+    { id: '1', title: 'Убрать пыль', position: 1, completed: true, completed_at: '2026-09-19T10:00:00.000Z' },
+  ],
 }
 const secondRow = { ...firstRow, number: 'DT-000002', address: 'Второй адрес' }
 
@@ -49,6 +53,16 @@ describe('public order token access', () => {
     assert.deepEqual(order?.photos.map(({ kind, src }) => ({ kind, src })), [
       { kind: 'before', src: '/api/photos/11111111-1111-1111-1111-111111111111' },
       { kind: 'after', src: '/api/photos/22222222-2222-2222-2222-222222222222' },
+    ])
+    assert.deepEqual(order?.checklist, [
+      {
+        id: '1',
+        title: 'Убрать пыль',
+        position: 1,
+        completed: true,
+        completedAt: '2026-09-19T10:00:00.000Z',
+      },
+      { id: '2', title: 'Вымыть полы', position: 2, completed: false, completedAt: null },
     ])
   })
 

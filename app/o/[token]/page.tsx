@@ -3,6 +3,7 @@ import { ConfirmedOrderCard } from '@/components/tracker/confirmed-order-card'
 import { ClientAutoRefresh } from '@/components/tracker/client-auto-refresh'
 import { ClientAcceptance } from '@/components/tracker/client-acceptance'
 import { OrderPhotoGallery } from '@/components/tracker/order-photo-gallery'
+import { ClientChecklist } from '@/components/tracker/order-checklist'
 import { getOrderByClientToken } from '@/lib/orders'
 import { showClientAcceptance, showClientPhotoReport } from '@/lib/order-presentation'
 
@@ -18,6 +19,9 @@ export default async function ClientOrderPage({
     <>
       <ClientAutoRefresh enabled={order.status !== 'completed' && order.status !== 'accepted'} />
       <ConfirmedOrderCard order={order}>
+        {order.serviceType === 'house_cleaning' && order.checklist.length > 0 && (
+          <ClientChecklist items={order.checklist} />
+        )}
         {showClientPhotoReport(order.photoReportEnabled) && <OrderPhotoGallery photos={order.photos} />}
       </ConfirmedOrderCard>
       {showClientAcceptance(order.status) && <ClientAcceptance token={token} />}

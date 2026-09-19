@@ -1,4 +1,5 @@
 import { getDatabase } from './telegram/postgres-store.ts'
+import { createHouseCleaningChecklist } from './order-checklist.ts'
 import type { TrackableOrderStatus } from './public-orders.ts'
 
 export type WorkerAction = 'leave' | 'start' | 'complete'
@@ -30,7 +31,7 @@ export async function advanceWorkerOrder(
   try {
     return await getDatabase().begin(async (sql) => {
       const rows = await sql`
-        SELECT status
+        SELECT id, service_type, status
         FROM orders
         WHERE worker_token = ${token}
         FOR UPDATE
@@ -39,7 +40,12 @@ export async function advanceWorkerOrder(
       if (!order) return { ok: false, error: 'not_found' } as const
 
       const status = String(order.status) as TrackableOrderStatus
-      if (status === transition.to) return { ok: true, status } as const
+      if (status === transition.to) {
+        if (action === 'start' && order.service_type === 'house_cleaning') {
+          await createHouseCleaningChecklist(sql, String(order.id))
+        }
+        return { ok: true, status } as const
+      }
       if (status !== transition.from) {
         return { ok: false, error: 'invalid_transition' } as const
       }
@@ -63,6 +69,9 @@ export async function advanceWorkerOrder(
         RETURNING status
       `
       if (!updated[0]) return { ok: false, error: 'invalid_transition' } as const
+      if (action === 'start' && order.service_type === 'house_cleaning') {
+        await createHouseCleaningChecklist(sql, String(order.id))
+      }
       return { ok: true, status: String(updated[0].status) as TrackableOrderStatus } as const
     }) as WorkerActionResult
   } catch {

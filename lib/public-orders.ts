@@ -19,6 +19,15 @@ export interface PublicOrder {
   completedAt: string | null
   acceptedAt: string | null
   photos: OrderPhoto[]
+  checklist: OrderChecklistItem[]
+}
+
+export interface OrderChecklistItem {
+  id: string
+  title: string
+  position: number
+  completed: boolean
+  completedAt: string | null
 }
 
 export type OrderPhotoKind = 'before' | 'after'
@@ -42,6 +51,7 @@ export const TRACKABLE_ORDER_STATUSES = [
 export type TrackableOrderStatus = (typeof TRACKABLE_ORDER_STATUSES)[number]
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/
+const ITEM_ID_PATTERN = /^\d+$/
 
 export async function loadPublicOrder(
   token: string,
@@ -76,7 +86,26 @@ function mapPublicOrder(row: Record<string, unknown>): PublicOrder {
     completedAt: nullableDate(row.completed_at),
     acceptedAt: nullableDate(row.accepted_at),
     photos: mapPhotos(row.photos),
+    checklist: mapChecklist(row.checklist),
   }
+}
+
+function mapChecklist(value: unknown): OrderChecklistItem[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const row = item as Record<string, unknown>
+    const id = String(row.id)
+    const position = Number(row.position)
+    if (!ITEM_ID_PATTERN.test(id) || !Number.isInteger(position) || position < 1) return []
+    return [{
+      id,
+      title: String(row.title),
+      position,
+      completed: Boolean(row.completed),
+      completedAt: nullableDate(row.completed_at),
+    }]
+  }).sort((left, right) => left.position - right.position)
 }
 
 function mapPhotos(value: unknown): OrderPhoto[] {

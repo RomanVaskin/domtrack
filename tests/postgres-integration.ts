@@ -9,6 +9,10 @@ import { POST as uploadPhoto } from '../app/api/photos/route.ts'
 import { getOrderByClientToken, getOrderByWorkerToken } from '../lib/orders.ts'
 import { acceptClientOrder } from '../lib/client-orders.ts'
 import { advanceWorkerOrder } from '../lib/worker-orders.ts'
+import {
+  HOUSE_CLEANING_CHECKLIST,
+  updateOrderChecklistItem,
+} from '../lib/order-checklist.ts'
 import { getDatabase, PostgresSessionStore } from '../lib/telegram/postgres-store.ts'
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required')
@@ -21,7 +25,7 @@ async function main() {
   const uploadDirectory = await mkdtemp(join(tmpdir(), 'domtrack-photos-test-'))
   process.env.DOMTRACK_UPLOAD_DIR = uploadDirectory
   try {
-    await sql`TRUNCATE order_photos, telegram_sessions, orders RESTART IDENTITY`
+    await sql`TRUNCATE order_checklist_items, order_photos, telegram_sessions, orders RESTART IDENTITY`
     const [first] = await sql`
     INSERT INTO orders (
       telegram_chat_id, service_type, client_name, client_phone, address,
@@ -327,7 +331,130 @@ async function main() {
     `
     assert.equal((await postPhoto(noReportToken, 'before')).status, 409)
 
-    console.log('PASS: PostgreSQL lifecycle, photo upload/auth/isolation/serving, row locks, timestamps, idempotency')
+    const houseWorkerToken = 'h'.repeat(32)
+    const houseClientToken = 'c'.repeat(32)
+    const [house] = await sql`
+      INSERT INTO orders (
+        telegram_chat_id, service_type, client_name, client_phone, address,
+        requested_date, requested_time, photo_report_enabled, parameters,
+        status, source_session_id, worker_token, client_token, worker_name, assigned_at
+      ) VALUES (
+        45, 'house_cleaning', 'Дом', '+79990000003', 'Адрес 4',
+        '2026-09-23', '10:00–13:00', true, '{}'::jsonb,
+        'assigned', 'integration-checklist', ${houseWorkerToken}, ${houseClientToken},
+        'Исполнитель', now()
+      )
+      RETURNING id
+    `
+    const houseId = String(house.id)
+    assert.equal((await sql`
+      SELECT count(*)::int AS count FROM order_checklist_items WHERE order_id = ${houseId}::bigint
+    `)[0].count, 0)
+    assert.deepEqual(await advanceWorkerOrder(houseWorkerToken, 'leave'), {
+      ok: true,
+      status: 'on_the_way',
+    })
+    assert.deepEqual(await advanceWorkerOrder(houseWorkerToken, 'start'), {
+      ok: true,
+      status: 'in_progress',
+    })
+
+    let checklistRows = await sql`
+      SELECT id, title, position, completed, completed_at
+      FROM order_checklist_items
+      WHERE order_id = ${houseId}::bigint
+      ORDER BY position
+    `
+    assert.equal(checklistRows.length, 8)
+    assert.deepEqual(checklistRows.map((item) => item.title), [...HOUSE_CLEANING_CHECKLIST])
+    assert.ok(checklistRows.every((item) => item.completed === false && item.completed_at === null))
+    assert.deepEqual(await advanceWorkerOrder(houseWorkerToken, 'start'), {
+      ok: true,
+      status: 'in_progress',
+    })
+    assert.equal((await sql`
+      SELECT count(*)::int AS count FROM order_checklist_items WHERE order_id = ${houseId}::bigint
+    `)[0].count, 8)
+
+    const checklistItemId = String(checklistRows[0].id)
+    const checked = await updateOrderChecklistItem(houseWorkerToken, checklistItemId, true)
+    assert.equal(checked.ok, true)
+    if (!checked.ok) throw new Error('checklist update failed')
+    assert.equal(checked.completed, true)
+    assert.ok(checked.completedAt)
+    let checklistItem = (await sql`
+      SELECT completed, completed_at FROM order_checklist_items WHERE id = ${checklistItemId}::bigint
+    `)[0]
+    assert.equal(checklistItem.completed, true)
+    assert.ok(checklistItem.completed_at)
+
+    const unchecked = await updateOrderChecklistItem(houseWorkerToken, checklistItemId, false)
+    assert.deepEqual(unchecked, { ok: true, completed: false, completedAt: null })
+    checklistItem = (await sql`
+      SELECT completed, completed_at FROM order_checklist_items WHERE id = ${checklistItemId}::bigint
+    `)[0]
+    assert.equal(checklistItem.completed, false)
+    assert.equal(checklistItem.completed_at, null)
+
+    assert.deepEqual(await updateOrderChecklistItem('x'.repeat(32), checklistItemId, true), {
+      ok: false,
+      error: 'not_found',
+    })
+    assert.deepEqual(await updateOrderChecklistItem(houseClientToken, checklistItemId, true), {
+      ok: false,
+      error: 'not_found',
+    })
+    assert.deepEqual(await updateOrderChecklistItem(noReportToken, checklistItemId, true), {
+      ok: false,
+      error: 'not_found',
+    })
+    checklistItem = (await sql`
+      SELECT completed FROM order_checklist_items WHERE id = ${checklistItemId}::bigint
+    `)[0]
+    assert.equal(checklistItem.completed, false)
+
+    assert.deepEqual(await updateOrderChecklistItem(houseWorkerToken, checklistItemId, true), {
+      ok: true,
+      completed: true,
+      completedAt: (await sql`
+        SELECT completed_at FROM order_checklist_items WHERE id = ${checklistItemId}::bigint
+      `)[0].completed_at.toISOString(),
+    })
+    const inProgressClientOrder = await getOrderByClientToken(houseClientToken)
+    assert.equal(inProgressClientOrder?.serviceType, 'house_cleaning')
+    assert.equal(inProgressClientOrder?.checklist.length, 8)
+    assert.equal(inProgressClientOrder?.checklist.filter((item) => item.completed).length, 1)
+    assert.equal((await getOrderByWorkerToken(houseWorkerToken))?.checklist.length, 8)
+
+    assert.deepEqual(await advanceWorkerOrder(houseWorkerToken, 'complete'), {
+      ok: true,
+      status: 'completed',
+    })
+    assert.deepEqual(await updateOrderChecklistItem(houseWorkerToken, checklistItemId, false), {
+      ok: false,
+      error: 'not_editable',
+    })
+    assert.equal((await getOrderByClientToken(houseClientToken))?.checklist[0].completed, true)
+    const houseAcceptance = await acceptClientOrder(houseClientToken)
+    assert.equal(houseAcceptance.ok, true)
+    assert.deepEqual(await updateOrderChecklistItem(houseWorkerToken, checklistItemId, false), {
+      ok: false,
+      error: 'not_editable',
+    })
+    checklistRows = await sql`
+      SELECT completed FROM order_checklist_items WHERE order_id = ${houseId}::bigint ORDER BY position
+    `
+    assert.equal(checklistRows.filter((item) => item.completed).length, 1)
+
+    assert.equal((await getOrderByWorkerToken(confirmedA.workerToken))?.checklist.length, 0)
+    assert.equal((await sql`
+      SELECT count(*)::int AS count
+      FROM order_checklist_items i
+      JOIN orders o ON o.id = i.order_id
+      WHERE o.service_type <> 'house_cleaning'
+    `)[0].count, 0)
+
+    console.log('PASS: PostgreSQL lifecycle, checklist, photo upload/auth/isolation/serving, row locks, timestamps, idempotency')
   } finally {
     await sql.end()
     await getDatabase().end()
