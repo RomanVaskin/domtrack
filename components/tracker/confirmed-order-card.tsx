@@ -9,9 +9,11 @@ import { formatServiceParameters, SERVICE_LABELS } from '@/lib/telegram/flow'
 export function ConfirmedOrderCard({
   order,
   worker = false,
+  children,
 }: {
   order: PublicOrder
   worker?: boolean
+  children?: React.ReactNode
 }) {
   const parameters = formatServiceParameters(order.serviceType, order.parameters)
   const statusLabel = {
@@ -99,6 +101,7 @@ export function ConfirmedOrderCard({
             </section>
           </>
         )}
+        {children}
       </div>
     </main>
   )

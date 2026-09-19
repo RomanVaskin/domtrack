@@ -3,6 +3,17 @@ import type { WorkerAction } from './worker-orders.ts'
 
 export type TimelineStepState = 'done' | 'current' | 'final' | 'todo'
 
+export function showClientPhotoReport(photoReportEnabled: boolean): boolean {
+  return photoReportEnabled
+}
+
+export function showWorkerPhotoReport(
+  photoReportEnabled: boolean,
+  status: TrackableOrderStatus,
+): boolean {
+  return photoReportEnabled && (status === 'in_progress' || status === 'completed')
+}
+
 const timelineSteps = [
   { status: 'confirmed', label: 'Заказ подтверждён' },
   { status: 'assigned', label: 'Исполнитель назначен' },

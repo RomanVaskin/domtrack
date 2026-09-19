@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import postgres from 'postgres'
+import sharp from 'sharp'
+import { GET as getPhoto } from '../app/api/photos/[id]/route.ts'
+import { POST as uploadPhoto } from '../app/api/photos/route.ts'
 import { getOrderByClientToken, getOrderByWorkerToken } from '../lib/orders.ts'
 import { advanceWorkerOrder } from '../lib/worker-orders.ts'
 import { getDatabase, PostgresSessionStore } from '../lib/telegram/postgres-store.ts'
@@ -11,8 +17,10 @@ const sql = postgres(process.env.DATABASE_URL, { ssl: false, prepare: false })
 const store = new PostgresSessionStore()
 
 async function main() {
+  const uploadDirectory = await mkdtemp(join(tmpdir(), 'domtrack-photos-test-'))
+  process.env.DOMTRACK_UPLOAD_DIR = uploadDirectory
   try {
-    await sql`TRUNCATE telegram_sessions, orders RESTART IDENTITY`
+    await sql`TRUNCATE order_photos, telegram_sessions, orders RESTART IDENTITY`
     const [first] = await sql`
     INSERT INTO orders (
       telegram_chat_id, service_type, client_name, client_phone, address,
@@ -113,6 +121,65 @@ async function main() {
     state = (await sql`SELECT * FROM orders WHERE id = ${orderId}::bigint`)[0]
     assert.equal(state.started_at.toISOString(), startedAt)
 
+    const image = await sharp({
+      create: { width: 3000, height: 1500, channels: 3, background: '#447799' },
+    }).png().toBuffer()
+    const postPhoto = (token: string, kind: string, body: BodyInit = image, headers = {}) =>
+      uploadPhoto(new Request(`http://localhost/api/photos?kind=${kind}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/png', ...headers },
+        body,
+      }))
+
+    const beforeResponse = await postPhoto(confirmedA.workerToken, 'before')
+    assert.equal(beforeResponse.status, 201)
+    const beforePhoto = await beforeResponse.json() as { id: string; kind: string; src: string }
+    assert.equal(beforePhoto.kind, 'before')
+    const afterResponse = await postPhoto(confirmedA.workerToken, 'after')
+    assert.equal(afterResponse.status, 201)
+    const afterPhoto = await afterResponse.json() as { id: string; kind: string }
+    assert.equal(afterPhoto.kind, 'after')
+
+    assert.equal((await postPhoto(confirmedA.clientToken, 'before')).status, 404)
+    assert.equal((await postPhoto('x'.repeat(32), 'before')).status, 404)
+    assert.equal((await postPhoto(confirmedA.workerToken, 'other')).status, 404)
+    assert.equal((await postPhoto(confirmedA.workerToken, 'before', Buffer.from('<svg/>'))).status, 415)
+    assert.equal((await postPhoto(
+      confirmedA.workerToken,
+      'before',
+      Buffer.from('small'),
+      { 'content-length': String(50 * 1024 * 1024 + 1) },
+    )).status, 413)
+
+    const storedPhotos = await sql`
+      SELECT order_id, kind, storage_path FROM order_photos ORDER BY created_at, id
+    `
+    assert.deepEqual(storedPhotos.map((photo) => photo.kind), ['before', 'after'])
+    assert.ok(storedPhotos.every((photo) => String(photo.order_id) === orderId))
+    assert.ok(storedPhotos.every((photo) => /^[a-f0-9-]+\.jpg$/.test(String(photo.storage_path))))
+
+    const served = await getPhoto(new Request('http://localhost'), {
+      params: Promise.resolve({ id: beforePhoto.id }),
+    })
+    assert.equal(served.status, 200)
+    assert.equal(served.headers.get('content-type'), 'image/jpeg')
+    const servedMetadata = await sharp(Buffer.from(await served.arrayBuffer())).metadata()
+    assert.equal(servedMetadata.format, 'jpeg')
+    assert.ok((servedMetadata.width ?? Infinity) <= 2400)
+    assert.equal((await getPhoto(new Request('http://localhost'), {
+      params: Promise.resolve({ id: '99999999-9999-9999-9999-999999999999' }),
+    })).status, 404)
+    assert.equal((await getPhoto(new Request('http://localhost'), {
+      params: Promise.resolve({ id: '../README.md' }),
+    })).status, 404)
+
+    const originalPath = String(storedPhotos[0].storage_path)
+    await sql`UPDATE order_photos SET storage_path = '../README.md' WHERE id = ${beforePhoto.id}::uuid`
+    assert.equal((await getPhoto(new Request('http://localhost'), {
+      params: Promise.resolve({ id: beforePhoto.id }),
+    })).status, 404)
+    await sql`UPDATE order_photos SET storage_path = ${originalPath} WHERE id = ${beforePhoto.id}::uuid`
+
     assert.deepEqual(await advanceWorkerOrder(confirmedA.workerToken, 'complete'), {
       ok: true,
       status: 'completed',
@@ -126,6 +193,7 @@ async function main() {
     state = (await sql`SELECT * FROM orders WHERE id = ${orderId}::bigint`)[0]
     assert.equal(state.completed_at.toISOString(), completedAt)
     assert.equal(state.started_at.toISOString(), startedAt)
+    assert.equal((await postPhoto(confirmedA.workerToken, 'after')).status, 409)
 
     const completedClientOrder = await getOrderByClientToken(confirmedA.clientToken)
     const completedWorkerOrder = await getOrderByWorkerToken(confirmedA.workerToken)
@@ -139,6 +207,8 @@ async function main() {
     assert.equal(clientOrder?.clientPhone, null)
     assert.equal(workerOrder?.number, 'DT-000001')
     assert.equal(workerOrder?.clientPhone, '+79990000000')
+    assert.deepEqual(clientOrder?.photos.map((photo) => photo.kind), ['before', 'after'])
+    assert.deepEqual(workerOrder?.photos.map((photo) => photo.kind), ['before', 'after'])
     assert.equal(await getOrderByClientToken(confirmedA.workerToken), null)
     assert.equal(await getOrderByWorkerToken(confirmedA.clientToken), null)
     assert.equal(await getOrderByClientToken('invalid'), null)
@@ -186,10 +256,25 @@ async function main() {
     assert.equal(states[1].on_the_way_at, null)
     assert.equal(states[1].started_at, null)
     assert.equal(states[1].completed_at, null)
-    console.log('PASS: PostgreSQL lifecycle, row locks, token isolation, timestamps, idempotency')
+    const noReportToken = 'n'.repeat(32)
+    await sql`
+      INSERT INTO orders (
+        telegram_chat_id, service_type, client_name, client_phone, address,
+        requested_date, requested_time, photo_report_enabled, parameters,
+        status, source_session_id, worker_token
+      ) VALUES (
+        44, 'house_cleaning', 'Нет фото', '+79990000002', 'Адрес 3',
+        '2026-09-22', '09:00–12:00', false, '{}'::jsonb,
+        'in_progress', 'integration-no-photo', ${noReportToken}
+      )
+    `
+    assert.equal((await postPhoto(noReportToken, 'before')).status, 409)
+
+    console.log('PASS: PostgreSQL lifecycle, photo upload/auth/isolation/serving, row locks, timestamps, idempotency')
   } finally {
     await sql.end()
     await getDatabase().end()
+    await rm(uploadDirectory, { recursive: true, force: true })
   }
 }
 

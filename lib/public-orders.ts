@@ -17,6 +17,16 @@ export interface PublicOrder {
   onTheWayAt: string | null
   startedAt: string | null
   completedAt: string | null
+  photos: OrderPhoto[]
+}
+
+export type OrderPhotoKind = 'before' | 'after'
+
+export interface OrderPhoto {
+  id: string
+  kind: OrderPhotoKind
+  src: string
+  alt: string
 }
 
 export const TRACKABLE_ORDER_STATUSES = [
@@ -62,7 +72,26 @@ function mapPublicOrder(row: Record<string, unknown>): PublicOrder {
     onTheWayAt: nullableDate(row.on_the_way_at),
     startedAt: nullableDate(row.started_at),
     completedAt: nullableDate(row.completed_at),
+    photos: mapPhotos(row.photos),
   }
+}
+
+function mapPhotos(value: unknown): OrderPhoto[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((photo) => {
+    if (!photo || typeof photo !== 'object') return []
+    const row = photo as Record<string, unknown>
+    const id = String(row.id)
+    const kind = String(row.kind)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+      || (kind !== 'before' && kind !== 'after')) return []
+    return [{
+      id,
+      kind,
+      src: `/api/photos/${id}`,
+      alt: kind === 'before' ? 'Фото до выполнения работы' : 'Фото после выполнения работы',
+    } as OrderPhoto]
+  })
 }
 
 function nullableString(value: unknown): string | null {

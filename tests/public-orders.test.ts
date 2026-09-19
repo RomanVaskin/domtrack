@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { loadPublicOrder } from '../lib/public-orders.ts'
-import { getOrderTimeline, getWorkerActionPresentation } from '../lib/order-presentation.ts'
+import {
+  getOrderTimeline,
+  getWorkerActionPresentation,
+  showClientPhotoReport,
+  showWorkerPhotoReport,
+} from '../lib/order-presentation.ts'
 
 const firstToken = 'a'.repeat(32)
 const secondToken = 'b'.repeat(32)
@@ -22,6 +27,10 @@ const firstRow = {
   on_the_way_at: null,
   started_at: null,
   completed_at: null,
+  photos: [
+    { id: '11111111-1111-1111-1111-111111111111', kind: 'before' },
+    { id: '22222222-2222-2222-2222-222222222222', kind: 'after' },
+  ],
 }
 const secondRow = { ...firstRow, number: 'DT-000002', address: 'Второй адрес' }
 
@@ -31,6 +40,10 @@ describe('public order token access', () => {
     const order = await loadPublicOrder(firstToken, async (token) => rows.get(token) ?? null)
     assert.equal(order?.number, 'DT-000001')
     assert.equal(order?.address, 'Первый адрес')
+    assert.deepEqual(order?.photos.map(({ kind, src }) => ({ kind, src })), [
+      { kind: 'before', src: '/api/photos/11111111-1111-1111-1111-111111111111' },
+      { kind: 'after', src: '/api/photos/22222222-2222-2222-2222-222222222222' },
+    ])
   })
 
   test('a worker token returns only its matching order', async () => {
@@ -70,5 +83,15 @@ describe('tracker presentation', () => {
     assert.equal(getWorkerActionPresentation('on_the_way')?.label, 'Начать работу')
     assert.equal(getWorkerActionPresentation('in_progress')?.label, 'Завершить работу')
     assert.equal(getWorkerActionPresentation('completed'), null)
+  })
+
+  test('photo report visibility follows the flag and lifecycle', () => {
+    assert.equal(showClientPhotoReport(true), true)
+    assert.equal(showClientPhotoReport(false), false)
+    assert.equal(showWorkerPhotoReport(true, 'assigned'), false)
+    assert.equal(showWorkerPhotoReport(true, 'on_the_way'), false)
+    assert.equal(showWorkerPhotoReport(true, 'in_progress'), true)
+    assert.equal(showWorkerPhotoReport(true, 'completed'), true)
+    assert.equal(showWorkerPhotoReport(false, 'in_progress'), false)
   })
 })
