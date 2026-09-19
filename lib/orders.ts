@@ -11,8 +11,11 @@ export async function getOrderByClientToken(token: string): Promise<PublicOrder 
              worker_name, confirmed_at, assigned_at, on_the_way_at, started_at, completed_at,
              accepted_at,
              COALESCE((
-               SELECT json_agg(json_build_object('id', p.id, 'kind', p.kind) ORDER BY p.created_at, p.id)
-               FROM order_photos p WHERE p.order_id = orders.id
+               SELECT json_agg(json_build_object(
+                 'id', p.id, 'kind', p.kind, 'checklist_item_id', p.checklist_item_id
+               ) ORDER BY p.created_at, p.id)
+               FROM order_photos p
+               WHERE p.order_id = orders.id AND p.checklist_item_id IS NULL
              ), '[]'::json) AS photos,
              COALESCE((
                SELECT json_agg(json_build_object(
@@ -20,7 +23,13 @@ export async function getOrderByClientToken(token: string): Promise<PublicOrder 
                  'title', i.title,
                  'position', i.position,
                  'completed', i.completed,
-                 'completed_at', i.completed_at
+                 'completed_at', i.completed_at,
+                 'photos', COALESCE((
+                   SELECT json_agg(json_build_object(
+                     'id', p.id, 'kind', p.kind, 'checklist_item_id', p.checklist_item_id
+                   ) ORDER BY p.created_at, p.id)
+                   FROM order_photos p WHERE p.checklist_item_id = i.id
+                 ), '[]'::json)
                ) ORDER BY i.position, i.id)
                FROM order_checklist_items i WHERE i.order_id = orders.id
              ), '[]'::json) AS checklist
@@ -40,8 +49,11 @@ export async function getOrderByWorkerToken(token: string): Promise<PublicOrder 
              worker_name, confirmed_at, assigned_at, on_the_way_at, started_at, completed_at,
              accepted_at,
              COALESCE((
-               SELECT json_agg(json_build_object('id', p.id, 'kind', p.kind) ORDER BY p.created_at, p.id)
-               FROM order_photos p WHERE p.order_id = orders.id
+               SELECT json_agg(json_build_object(
+                 'id', p.id, 'kind', p.kind, 'checklist_item_id', p.checklist_item_id
+               ) ORDER BY p.created_at, p.id)
+               FROM order_photos p
+               WHERE p.order_id = orders.id AND p.checklist_item_id IS NULL
              ), '[]'::json) AS photos,
              COALESCE((
                SELECT json_agg(json_build_object(
@@ -49,7 +61,13 @@ export async function getOrderByWorkerToken(token: string): Promise<PublicOrder 
                  'title', i.title,
                  'position', i.position,
                  'completed', i.completed,
-                 'completed_at', i.completed_at
+                 'completed_at', i.completed_at,
+                 'photos', COALESCE((
+                   SELECT json_agg(json_build_object(
+                     'id', p.id, 'kind', p.kind, 'checklist_item_id', p.checklist_item_id
+                   ) ORDER BY p.created_at, p.id)
+                   FROM order_photos p WHERE p.checklist_item_id = i.id
+                 ), '[]'::json)
                ) ORDER BY i.position, i.id)
                FROM order_checklist_items i WHERE i.order_id = orders.id
              ), '[]'::json) AS checklist

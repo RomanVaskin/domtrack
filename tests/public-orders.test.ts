@@ -38,8 +38,16 @@ const firstRow = {
     { id: '22222222-2222-2222-2222-222222222222', kind: 'after' },
   ],
   checklist: [
-    { id: '2', title: 'Вымыть полы', position: 2, completed: false, completed_at: null },
-    { id: '1', title: 'Убрать пыль', position: 1, completed: true, completed_at: '2026-09-19T10:00:00.000Z' },
+    { id: '2', title: 'Вымыть полы', position: 2, completed: false, completed_at: null, photos: [] },
+    {
+      id: '1', title: 'Убрать пыль', position: 1, completed: true,
+      completed_at: '2026-09-19T10:00:00.000Z',
+      photos: [{
+        id: '33333333-3333-3333-3333-333333333333',
+        kind: 'checklist',
+        checklist_item_id: '1',
+      }],
+    },
   ],
 }
 const secondRow = { ...firstRow, number: 'DT-000002', address: 'Второй адрес' }
@@ -61,8 +69,15 @@ describe('public order token access', () => {
         position: 1,
         completed: true,
         completedAt: '2026-09-19T10:00:00.000Z',
+        photos: [{
+          id: '33333333-3333-3333-3333-333333333333',
+          kind: 'checklist',
+          src: '/api/photos/33333333-3333-3333-3333-333333333333',
+          alt: 'Фото пункта чек-листа',
+          checklistItemId: '1',
+        }],
       },
-      { id: '2', title: 'Вымыть полы', position: 2, completed: false, completedAt: null },
+      { id: '2', title: 'Вымыть полы', position: 2, completed: false, completedAt: null, photos: [] },
     ])
   })
 

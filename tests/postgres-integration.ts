@@ -377,6 +377,71 @@ async function main() {
     `)[0].count, 8)
 
     const checklistItemId = String(checklistRows[0].id)
+    const secondChecklistItemId = String(checklistRows[1].id)
+    const postChecklistPhoto = (token: string, itemId: string, body: BodyInit = image) =>
+      uploadPhoto(new Request(`http://localhost/api/photos?checklist_item_id=${itemId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' },
+        body,
+      }))
+
+    assert.equal((await postChecklistPhoto('x'.repeat(32), checklistItemId)).status, 404)
+    assert.equal((await postChecklistPhoto(houseClientToken, checklistItemId)).status, 404)
+    assert.equal((await postChecklistPhoto(houseWorkerToken, '999999999999')).status, 404)
+
+    const otherHouseItem = (await sql`
+      INSERT INTO order_checklist_items (order_id, title, position)
+      SELECT id, 'Чужой пункт', 1 FROM orders WHERE worker_token = ${noReportToken}
+      RETURNING id
+    `)[0]
+    assert.equal((await postChecklistPhoto(houseWorkerToken, String(otherHouseItem.id))).status, 404)
+
+    const lawnToken = 'l'.repeat(32)
+    const [lawn] = await sql`
+      INSERT INTO orders (
+        telegram_chat_id, service_type, client_name, client_phone, address,
+        requested_date, requested_time, photo_report_enabled, parameters,
+        status, source_session_id, worker_token
+      ) VALUES (
+        46, 'lawn_mowing', 'Газон', '+79990000004', 'Адрес 5',
+        '2026-09-24', '10:00–13:00', true, '{}'::jsonb,
+        'in_progress', 'integration-wrong-service', ${lawnToken}
+      ) RETURNING id
+    `
+    const [lawnItem] = await sql`
+      INSERT INTO order_checklist_items (order_id, title, position)
+      VALUES (${String(lawn.id)}::bigint, 'Не уборка', 1) RETURNING id
+    `
+    assert.equal((await postChecklistPhoto(lawnToken, String(lawnItem.id))).status, 409)
+    await sql`DELETE FROM orders WHERE id = ${String(lawn.id)}::bigint`
+
+    const firstItemPhotoResponse = await postChecklistPhoto(houseWorkerToken, checklistItemId)
+    assert.equal(firstItemPhotoResponse.status, 201)
+    const firstItemPhoto = await firstItemPhotoResponse.json() as { id: string; checklistItemId: string; kind: string }
+    assert.equal(firstItemPhoto.kind, 'checklist')
+    assert.equal(firstItemPhoto.checklistItemId, checklistItemId)
+    const secondFirstItemPhotoResponse = await postChecklistPhoto(houseWorkerToken, checklistItemId)
+    assert.equal(secondFirstItemPhotoResponse.status, 201)
+    const secondFirstItemPhoto = await secondFirstItemPhotoResponse.json() as { id: string }
+    const secondItemPhotoResponse = await postChecklistPhoto(houseWorkerToken, secondChecklistItemId)
+    assert.equal(secondItemPhotoResponse.status, 201)
+    const secondItemPhoto = await secondItemPhotoResponse.json() as { id: string }
+
+    const checklistPhotoRows = await sql`
+      SELECT id, order_id, kind, checklist_item_id, storage_path
+      FROM order_photos
+      WHERE order_id = ${houseId}::bigint
+      ORDER BY created_at, id
+    `
+    assert.equal(checklistPhotoRows.length, 3)
+    assert.ok(checklistPhotoRows.every((photo) => photo.kind === 'checklist'))
+    assert.ok(checklistPhotoRows.every((photo) => String(photo.order_id) === houseId))
+    assert.deepEqual(
+      checklistPhotoRows.map((photo) => String(photo.checklist_item_id)),
+      [checklistItemId, checklistItemId, secondChecklistItemId],
+    )
+    assert.equal(new Set(checklistPhotoRows.map((photo) => photo.storage_path)).size, 3)
+
     const checked = await updateOrderChecklistItem(houseWorkerToken, checklistItemId, true)
     assert.equal(checked.ok, true)
     if (!checked.ok) throw new Error('checklist update failed')
@@ -424,7 +489,15 @@ async function main() {
     assert.equal(inProgressClientOrder?.serviceType, 'house_cleaning')
     assert.equal(inProgressClientOrder?.checklist.length, 8)
     assert.equal(inProgressClientOrder?.checklist.filter((item) => item.completed).length, 1)
-    assert.equal((await getOrderByWorkerToken(houseWorkerToken))?.checklist.length, 8)
+    assert.deepEqual(inProgressClientOrder?.checklist.map((item) => item.photos.map((photo) => photo.id)), [
+      [firstItemPhoto.id, secondFirstItemPhoto.id],
+      [secondItemPhoto.id],
+      [], [], [], [], [], [],
+    ])
+    assert.equal(inProgressClientOrder?.photos.length, 0)
+    const inProgressWorkerOrder = await getOrderByWorkerToken(houseWorkerToken)
+    assert.equal(inProgressWorkerOrder?.checklist.length, 8)
+    assert.equal(inProgressWorkerOrder?.checklist.flatMap((item) => item.photos).length, 3)
 
     assert.deepEqual(await advanceWorkerOrder(houseWorkerToken, 'complete'), {
       ok: true,
@@ -434,9 +507,11 @@ async function main() {
       ok: false,
       error: 'not_editable',
     })
+    assert.equal((await postChecklistPhoto(houseWorkerToken, checklistItemId)).status, 409)
     assert.equal((await getOrderByClientToken(houseClientToken))?.checklist[0].completed, true)
     const houseAcceptance = await acceptClientOrder(houseClientToken)
     assert.equal(houseAcceptance.ok, true)
+    assert.equal((await postChecklistPhoto(houseWorkerToken, checklistItemId)).status, 409)
     assert.deepEqual(await updateOrderChecklistItem(houseWorkerToken, checklistItemId, false), {
       ok: false,
       error: 'not_editable',

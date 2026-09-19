@@ -10,7 +10,7 @@ import {
   takeSelectedPhotoFiles,
   uploadOrderPhotos,
 } from '@/lib/photo-upload'
-import type { OrderPhoto, OrderPhotoKind, TrackableOrderStatus } from '@/lib/public-orders'
+import type { GlobalOrderPhotoKind, OrderPhoto, TrackableOrderStatus } from '@/lib/public-orders'
 
 export function WorkerPhotos({
   token,
@@ -23,13 +23,13 @@ export function WorkerPhotos({
 }) {
   const [photos, setPhotos] = useState(initialPhotos)
   const [viewer, setViewer] = useState<OrderPhoto | null>(null)
-  const [uploading, setUploading] = useState<OrderPhotoKind | null>(null)
+  const [uploading, setUploading] = useState<GlobalOrderPhotoKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
-  const target = useRef<OrderPhotoKind>('before')
+  const target = useRef<GlobalOrderPhotoKind>('before')
   const editable = status === 'in_progress'
 
-  function choose(kind: OrderPhotoKind) {
+  function choose(kind: GlobalOrderPhotoKind) {
     target.current = kind
     input.current?.click()
   }

@@ -19,10 +19,15 @@ export default async function ClientOrderPage({
     <>
       <ClientAutoRefresh enabled={order.status !== 'completed' && order.status !== 'accepted'} />
       <ConfirmedOrderCard order={order}>
+        {order.serviceType !== 'house_cleaning' && showClientPhotoReport(order.photoReportEnabled) && (
+          <OrderPhotoGallery photos={order.photos} />
+        )}
+        {order.serviceType === 'house_cleaning' && order.photos.length > 0 && (
+          <OrderPhotoGallery photos={order.photos} />
+        )}
         {order.serviceType === 'house_cleaning' && order.checklist.length > 0 && (
           <ClientChecklist items={order.checklist} />
         )}
-        {showClientPhotoReport(order.photoReportEnabled) && <OrderPhotoGallery photos={order.photos} />}
       </ConfirmedOrderCard>
       {showClientAcceptance(order.status) && <ClientAcceptance token={token} />}
     </>

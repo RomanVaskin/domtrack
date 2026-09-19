@@ -28,15 +28,18 @@ export interface OrderChecklistItem {
   position: number
   completed: boolean
   completedAt: string | null
+  photos: OrderPhoto[]
 }
 
-export type OrderPhotoKind = 'before' | 'after'
+export type OrderPhotoKind = 'before' | 'after' | 'checklist'
+export type GlobalOrderPhotoKind = Exclude<OrderPhotoKind, 'checklist'>
 
 export interface OrderPhoto {
   id: string
   kind: OrderPhotoKind
   src: string
   alt: string
+  checklistItemId: string | null
 }
 
 export const TRACKABLE_ORDER_STATUSES = [
@@ -104,6 +107,7 @@ function mapChecklist(value: unknown): OrderChecklistItem[] {
       position,
       completed: Boolean(row.completed),
       completedAt: nullableDate(row.completed_at),
+      photos: mapPhotos(row.photos),
     }]
   }).sort((left, right) => left.position - right.position)
 }
@@ -116,12 +120,19 @@ function mapPhotos(value: unknown): OrderPhoto[] {
     const id = String(row.id)
     const kind = String(row.kind)
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
-      || (kind !== 'before' && kind !== 'after')) return []
+      || !['before', 'after', 'checklist'].includes(kind)) return []
+    const checklistItemId = row.checklist_item_id === null || row.checklist_item_id === undefined
+      ? null
+      : String(row.checklist_item_id)
+    if (kind === 'checklist' && (!checklistItemId || !ITEM_ID_PATTERN.test(checklistItemId))) return []
     return [{
       id,
       kind,
       src: `/api/photos/${id}`,
-      alt: kind === 'before' ? 'Фото до выполнения работы' : 'Фото после выполнения работы',
+      alt: kind === 'before'
+        ? 'Фото до выполнения работы'
+        : kind === 'after' ? 'Фото после выполнения работы' : 'Фото пункта чек-листа',
+      checklistItemId,
     } as OrderPhoto]
   })
 }

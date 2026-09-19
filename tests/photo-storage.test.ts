@@ -7,6 +7,7 @@ import {
   takeSelectedPhotoFiles,
   uploadOrderPhoto,
   uploadOrderPhotos,
+  uploadChecklistPhoto,
 } from '../lib/photo-upload.ts'
 import { imageFormat, normalizePhoto, PhotoInputError } from '../lib/photo-storage.ts'
 
@@ -117,6 +118,20 @@ describe('worker photo upload client', () => {
       assert.ok(calls.every((call) => !call.url.includes(token)))
       assert.deepEqual(calls.map((call) => call.body), [...beforeFiles, ...afterFiles])
       assert.equal(uploaded.length, 5)
+
+      const checklistFile = new File(['checklist'], 'checklist.heic', { type: 'image/heic' })
+      global.fetch = async (input, init) => {
+        const headers = new Headers(init?.headers)
+        assert.equal(String(input), '/api/photos?checklist_item_id=42')
+        assert.equal(headers.get('authorization'), `Bearer ${token}`)
+        assert.equal(init?.body, checklistFile)
+        return Response.json({
+          id: '99999999-1111-1111-1111-111111111111',
+          kind: 'checklist',
+          checklistItemId: '42',
+        }, { status: 201 })
+      }
+      assert.equal((await uploadChecklistPhoto(checklistFile, token, '42')).checklistItemId, '42')
 
       await assert.rejects(
         uploadOrderPhoto({ size: MAX_PHOTO_BYTES + 1 } as File, token, 'after'),

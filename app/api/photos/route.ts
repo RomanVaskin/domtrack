@@ -1,7 +1,7 @@
-import { addOrderPhoto } from '../../../lib/order-photos.ts'
+import { addOrderChecklistPhoto, addOrderPhoto } from '../../../lib/order-photos.ts'
 import { MAX_PHOTO_BYTES, photoUploadError } from '../../../lib/photo-upload.ts'
 import { PhotoInputError } from '../../../lib/photo-storage.ts'
-import type { OrderPhotoKind } from '../../../lib/public-orders.ts'
+import type { GlobalOrderPhotoKind } from '../../../lib/public-orders.ts'
 
 export const runtime = 'nodejs'
 
@@ -27,8 +27,12 @@ export async function POST(request: Request) {
   }
   const authorization = request.headers.get('authorization')
   const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : ''
-  const kind = new URL(request.url).searchParams.get('kind')
-  if ((kind !== 'before' && kind !== 'after') || !token) return fail(404, 'Invalid target')
+  const params = new URL(request.url).searchParams
+  const kind = params.get('kind')
+  const checklistItemId = params.get('checklist_item_id')
+  const globalTarget = (kind === 'before' || kind === 'after') && checklistItemId === null
+  const checklistTarget = kind === null && checklistItemId !== null && /^\d+$/.test(checklistItemId)
+  if ((!globalTarget && !checklistTarget) || !token) return fail(404, 'Invalid target')
   if (Number(request.headers.get('content-length')) > MAX_PHOTO_BYTES) {
     return fail(413, 'Source photo exceeds 50 MiB')
   }
@@ -53,7 +57,10 @@ export async function POST(request: Request) {
       reader.releaseLock()
     }
 
-    const result = await addOrderPhoto(token, kind as OrderPhotoKind, Buffer.concat(chunks))
+    const bytes = Buffer.concat(chunks)
+    const result = checklistTarget
+      ? await addOrderChecklistPhoto(token, checklistItemId, bytes)
+      : await addOrderPhoto(token, kind as GlobalOrderPhotoKind, bytes)
     if (!result.ok) return fail(result.error === 'not_found' ? 404 : 409, result.error)
     return Response.json(result.photo, { status: 201 })
   } catch (error) {

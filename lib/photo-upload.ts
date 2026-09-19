@@ -1,4 +1,4 @@
-import type { OrderPhoto, OrderPhotoKind } from './public-orders'
+import type { GlobalOrderPhotoKind, OrderPhoto } from './public-orders'
 
 export const MAX_PHOTO_BYTES = 50 * 1024 * 1024
 
@@ -28,7 +28,7 @@ export function takeSelectedPhotoFiles(
 export async function uploadOrderPhoto(
   file: File,
   workerToken: string,
-  kind: OrderPhotoKind,
+  kind: GlobalOrderPhotoKind,
 ): Promise<OrderPhoto> {
   if (file.size > MAX_PHOTO_BYTES) throw new Error(photoUploadError(413))
   if (!file.size) throw new Error(photoUploadError(415))
@@ -48,10 +48,31 @@ export async function uploadOrderPhoto(
 export async function uploadOrderPhotos(
   files: readonly File[],
   workerToken: string,
-  kind: OrderPhotoKind,
+  kind: GlobalOrderPhotoKind,
   onUploaded: (photo: OrderPhoto) => void,
 ) {
   for (const file of files) {
     onUploaded(await uploadOrderPhoto(file, workerToken, kind))
   }
+}
+
+export async function uploadChecklistPhoto(
+  file: File,
+  workerToken: string,
+  checklistItemId: string,
+): Promise<OrderPhoto> {
+  if (file.size > MAX_PHOTO_BYTES) throw new Error(photoUploadError(413))
+  if (!file.size) throw new Error(photoUploadError(415))
+
+  const params = new URLSearchParams({ checklist_item_id: checklistItemId })
+  const response = await fetch(`/api/photos?${params}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${workerToken}`,
+      'Content-Type': file.type || 'application/octet-stream',
+    },
+    body: file,
+  })
+  if (!response.ok) throw new Error(photoUploadError(response.status))
+  return await response.json() as OrderPhoto
 }

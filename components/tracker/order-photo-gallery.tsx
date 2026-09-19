@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { PhotoViewer } from './photo-viewer'
-import type { OrderPhoto, OrderPhotoKind } from '@/lib/public-orders'
+import type { GlobalOrderPhotoKind, OrderPhoto } from '@/lib/public-orders'
 
 export function OrderPhotoGallery({ photos }: { photos: OrderPhoto[] }) {
   const [viewer, setViewer] = useState<OrderPhoto | null>(null)
@@ -27,7 +27,7 @@ export function PhotoGroup({
   photos,
   onOpen,
 }: {
-  kind: OrderPhotoKind
+  kind: GlobalOrderPhotoKind
   title: string
   photos: OrderPhoto[]
   onOpen: (photo: OrderPhoto) => void
