@@ -14,7 +14,7 @@ export function FinalCta() {
         </p>
         <div className="mx-auto mt-8 flex max-w-sm flex-col gap-3 sm:max-w-none sm:flex-row sm:justify-center">
           <Button
-            render={<a href="#services" />}
+            render={<a href="https://t.me/DomTrackBot" target="_blank" rel="noreferrer" />}
             nativeButton={false}
             size="lg"
             className="w-full rounded-full bg-primary-foreground px-7 text-primary hover:bg-primary-foreground/90 sm:w-auto"
