@@ -29,7 +29,12 @@ export function SiteHeader() {
           ))}
         </nav>
 
-        <Button render={<a href="#services" />} nativeButton={false} size="sm" className="rounded-full px-4 sm:px-5">
+        <Button
+          render={<a href="https://t.me/DomTrackBot" target="_blank" rel="noreferrer" />}
+          nativeButton={false}
+          size="sm"
+          className="rounded-full px-4 sm:px-5"
+        >
           Заказать услугу
         </Button>
       </div>
