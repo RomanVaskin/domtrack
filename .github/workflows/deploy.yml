@@ -1,0 +1,111 @@
+name: Deploy DomTrack to production
+
+# Build happens entirely on this runner. The production server only receives a prebuilt
+# archive — it never runs `next build`, and this workflow never touches nginx, the systemd unit
+# definition, the database, or the server's existing .env.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: domtrack-production-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build (webpack)
+        run: pnpm build --webpack
+
+      - name: Prepare deploy archive
+        run: |
+          set -euo pipefail
+          rm -rf deploy-stage deploy.tar.gz
+          mkdir -p deploy-stage
+
+          cp -r .next deploy-stage/.next
+          rm -rf deploy-stage/.next/cache
+          cp -r public deploy-stage/public
+          cp package.json pnpm-lock.yaml pnpm-workspace.yaml next.config.mjs deploy-stage/
+
+          tar -czf deploy.tar.gz -C deploy-stage .
+          ls -lh deploy.tar.gz
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.BEGET_SSH_PRIVATE_KEY }}
+
+      - name: Upload deploy archive
+        env:
+          BEGET_HOST: ${{ secrets.BEGET_HOST }}
+          BEGET_USER: ${{ secrets.BEGET_USER }}
+          BEGET_PORT: ${{ secrets.BEGET_PORT }}
+        run: |
+          set -euo pipefail
+          SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $BEGET_PORT"
+          REMOTE_ARCHIVE="/tmp/domtrack-deploy-${{ github.sha }}.tar.gz"
+          echo "REMOTE_ARCHIVE=$REMOTE_ARCHIVE" >> "$GITHUB_ENV"
+          scp $SCP_OPTS deploy.tar.gz "$BEGET_USER@$BEGET_HOST:$REMOTE_ARCHIVE"
+
+      - name: Deploy and restart service
+        env:
+          BEGET_HOST: ${{ secrets.BEGET_HOST }}
+          BEGET_USER: ${{ secrets.BEGET_USER }}
+          BEGET_PORT: ${{ secrets.BEGET_PORT }}
+        run: |
+          set -euo pipefail
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $BEGET_PORT"
+          ssh $SSH_OPTS "$BEGET_USER@$BEGET_HOST" bash -lc "
+            set -euo pipefail
+
+            if [ ! -f /opt/domtrack/.env ]; then
+              echo '::error::/opt/domtrack/.env is missing on the server — aborting deploy' >&2
+              exit 1
+            fi
+
+            rm -rf /opt/domtrack/.next
+            tar -xzf '$REMOTE_ARCHIVE' -C /opt/domtrack
+            rm -f '$REMOTE_ARCHIVE'
+
+            cd /opt/domtrack
+            pnpm install --prod --frozen-lockfile
+
+            systemctl restart domtrack
+            sleep 5
+            systemctl is-active --quiet domtrack
+          "
+
+      - name: Health check (https://domtrack.ru)
+        run: curl -fsS --retry 3 --retry-delay 3 --max-time 10 -I https://domtrack.ru
