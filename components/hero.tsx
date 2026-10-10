@@ -22,7 +22,12 @@ export function Hero() {
           </p>
 
           <div className="mt-6 flex flex-col gap-3 sm:mt-8 sm:flex-row">
-            <Button render={<a href="#services" />} nativeButton={false} size="lg" className="w-full rounded-full px-7 sm:w-auto">
+            <Button
+              render={<a href="https://t.me/DomTrackBot" target="_blank" rel="noreferrer" />}
+              nativeButton={false}
+              size="lg"
+              className="w-full rounded-full px-7 sm:w-auto"
+            >
               Заказать услугу
               <ArrowRight className="ml-1 size-4" />
             </Button>
