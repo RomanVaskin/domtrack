@@ -63,8 +63,8 @@ export function TrackerMockup({
           <FloatingCard
             className="-left-10 top-6 -translate-x-1/2"
             icon={<UserRound className="size-4" />}
-            title="Исполнитель"
-            value="Назначен"
+            title="Исполнитель назначен"
+            value="Игорь С."
           />
           <FloatingCard
             className="-right-8 top-[23rem] translate-x-1/2"
