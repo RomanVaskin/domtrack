@@ -30,6 +30,7 @@ export interface SessionData {
   photoReportEnabled?: boolean
   comment?: string
   adminOrderId?: string
+  referralPartnerId?: string
 }
 
 export interface TelegramSession {
@@ -53,6 +54,8 @@ export interface NewOrder {
   parameters: OrderParameters
   comment?: string
   totalPrice: number | null
+  referralPartnerId: string | null
+  referralSource: string | null
 }
 
 export interface CreatedOrder {
@@ -99,6 +102,49 @@ export type SetOrderPriceResult =
   | { kind: 'set'; orderNumber: string }
   | { kind: 'not_found' | 'error' }
 
+export interface ReferralPartner {
+  id: string
+  name: string
+  code: string
+  accessToken: string
+  commissionPercent: number
+  active: boolean
+  createdAt: string
+}
+
+export type ReferralCommissionState = 'accrued' | 'pending' | 'price_unconfirmed'
+
+export interface ReferralOrderSummary {
+  id: string
+  number: string
+  createdAt: string
+  totalPrice: number | null
+  status: string
+  statusLabel: string
+  commissionState: ReferralCommissionState
+  commission: number
+}
+
+export interface ReferralPartnerStats {
+  id: string
+  name: string
+  code: string
+  active: boolean
+  commissionPercent: number
+  ordersCount: number
+  totalAmount: number
+  completedAmount: number
+  accruedCommission: number
+}
+
+export interface ReferralPartnerDetail extends ReferralPartnerStats {
+  orders: ReferralOrderSummary[]
+}
+
+export interface ReferralPartnerAdminDetail extends ReferralPartnerDetail {
+  accessToken: string
+}
+
 export interface SessionStore {
   withChatLock<T>(
     chatId: string,
@@ -109,6 +155,10 @@ export interface SessionStore {
   assignOrder(orderId: string): Promise<AssignOrderResult>
   rejectOrder(orderId: string): Promise<RejectOrderResult>
   setOrderPrice(orderId: string, price: number): Promise<SetOrderPriceResult>
+  getActiveReferralPartnerByCode(code: string): Promise<{ id: string; code: string } | null>
+  createReferralPartner(name: string): Promise<ReferralPartner>
+  listReferralPartners(): Promise<ReferralPartnerStats[]>
+  getReferralPartnerAdminDetail(id: string): Promise<ReferralPartnerAdminDetail | null>
 }
 
 export interface SessionTransaction {
@@ -120,7 +170,8 @@ export interface SessionTransaction {
 
 export interface InlineButton {
   text: string
-  callback_data: string
+  callback_data?: string
+  url?: string
 }
 
 export interface ReplyMarkup {

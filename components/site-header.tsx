@@ -9,7 +9,7 @@ const NAV_LINKS = [
   { href: '#benefits', label: 'Возможности' },
 ]
 
-export function SiteHeader() {
+export function SiteHeader({ telegramUrl }: { telegramUrl: string }) {
   return (
     <header className="sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur-md">
       <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-5 md:h-16 md:px-8">
@@ -30,7 +30,7 @@ export function SiteHeader() {
         </nav>
 
         <Button
-          render={<a href="https://t.me/DomTrackBot" target="_blank" rel="noreferrer" />}
+          render={<a href={telegramUrl} target="_blank" rel="noreferrer" />}
           nativeButton={false}
           size="sm"
           className="rounded-full px-4 sm:px-5"

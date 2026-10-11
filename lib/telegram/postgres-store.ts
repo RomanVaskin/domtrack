@@ -1,10 +1,20 @@
 import { randomBytes } from 'node:crypto'
 import postgres, { type Sql, type TransactionSql } from 'postgres'
+import {
+  createReferralPartner as createReferralPartnerRow,
+  getActiveReferralPartnerByCode as getActiveReferralPartnerByCodeRow,
+  getActiveReferralPartnerId,
+  getReferralPartnerAdminDetailById,
+  listReferralPartners as listReferralPartnersRows,
+} from '../referral-partners.ts'
 import type {
   AssignOrderResult,
   ConfirmOrderResult,
   CreatedOrder,
   NewOrder,
+  ReferralPartner,
+  ReferralPartnerAdminDetail,
+  ReferralPartnerStats,
   RejectOrderResult,
   SessionStore,
   SessionTransaction,
@@ -221,9 +231,32 @@ export class PostgresSessionStore implements SessionStore {
       return { kind: 'error' }
     }
   }
+
+  async getActiveReferralPartnerByCode(code: string): Promise<{ id: string; code: string } | null> {
+    return getActiveReferralPartnerByCodeRow(code)
+  }
+
+  async createReferralPartner(name: string): Promise<ReferralPartner> {
+    return createReferralPartnerRow(getDatabase(), name)
+  }
+
+  async listReferralPartners(): Promise<ReferralPartnerStats[]> {
+    return listReferralPartnersRows(getDatabase())
+  }
+
+  async getReferralPartnerAdminDetail(id: string): Promise<ReferralPartnerAdminDetail | null> {
+    return getReferralPartnerAdminDetailById(id, getDatabase())
+  }
 }
 
 async function createOrder(sql: TransactionSql, order: NewOrder): Promise<CreatedOrder> {
+  // Re-checked here, inside this same transaction, right before the INSERT: a partner
+  // disabled between /start and submit must never be attributed. Never trust session data alone.
+  const referralPartnerId = order.referralPartnerId
+    ? await getActiveReferralPartnerId(sql, order.referralPartnerId)
+    : null
+  const referralSource = referralPartnerId ? order.referralSource : null
+
   const rows = await sql`
     INSERT INTO orders (
       telegram_chat_id,
@@ -239,7 +272,9 @@ async function createOrder(sql: TransactionSql, order: NewOrder): Promise<Create
       comment,
       status,
       source_session_id,
-      total_price
+      total_price,
+      referral_partner_id,
+      referral_source
     ) VALUES (
       ${order.telegramChatId}::bigint,
       ${order.telegramUsername ?? null},
@@ -254,7 +289,9 @@ async function createOrder(sql: TransactionSql, order: NewOrder): Promise<Create
       ${order.comment ?? null},
       'new',
       ${order.sourceSessionId},
-      ${order.totalPrice}
+      ${order.totalPrice},
+      ${referralPartnerId},
+      ${referralSource}
     )
     ON CONFLICT (source_session_id) DO UPDATE SET
       source_session_id = EXCLUDED.source_session_id
