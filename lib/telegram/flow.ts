@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { syncOrderToCrm } from '../crm-sync.ts'
 import { domTrackUrl } from '../domtrack-url.ts'
 import { calculatePrice, formatPriceDisplay, formatRubles } from '../pricing.ts'
 import { TELEGRAM_CONTACT_URL } from '../telegram-contact.ts'
@@ -184,6 +185,10 @@ export class TelegramOrderFlow {
     )
     if (result.submittedOrder) {
       deliveries.push(this.notifyAdminOfNewOrder(result.submittedOrder))
+      // Order is already committed above (same guard as the admin notification: only the
+      // callback that actually created the order reaches here, never a replay) — this can only
+      // add a CRM lead for an order that is already safely saved, never the reverse.
+      deliveries.push(this.syncCrmLead(result.submittedOrder))
     }
     const outcomes = await Promise.allSettled(deliveries)
     if (outcomes.some((outcome) => outcome.status === 'rejected')) {
@@ -203,6 +208,17 @@ export class TelegramOrderFlow {
         { text: '❌ Отклонить', callback_data: `a:r:${order.id}` },
         { text: '💰 Указать цену', callback_data: `a:p:${order.id}` },
       ]],
+    })
+  }
+
+  private async syncCrmLead(order: CreatedOrder): Promise<void> {
+    await syncOrderToCrm({
+      number: order.number,
+      leadTrackingId: order.sourceSessionId,
+      clientName: order.clientName,
+      clientPhone: order.clientPhone,
+      service: SERVICE_LABELS[order.serviceType],
+      message: buildAdminOrderText(order),
     })
   }
 

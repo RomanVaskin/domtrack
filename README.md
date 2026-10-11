@@ -24,6 +24,21 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
+## OLNOO CRM lead sync
+
+After a Telegram order is saved in DomTrack's own `orders` table (`lib/telegram/flow.ts`'s
+`deliver`, right after the admin Telegram notification), `lib/crm-sync.ts` sends the same order as
+a commercial-context lead to the shared OLNOO CRM (`POST /api/leads/inbound` in `olnoo-admin`,
+`project: "domtrack"`) — name, phone, service, the same order summary already sent to the admin,
+and the order's own `source_session_id` (a UUID, not the bigint `orders.id`) reused as the CRM's
+`lead_tracking_id`, so a retried sync can never create a second lead or a second owner
+notification. Requires server-only `OLNOO_CRM_URL`/`OLNOO_CRM_API_KEY` (see `.env.example`);
+without them the sync is skipped (logged) and the DomTrack order still saves normally — this runs
+strictly after the order is committed and can never affect it. DomTrack's own `orders` table
+remains the source of truth; the CRM only gets enough context to notify the owner and show the
+lead. Telegram notification of the owner is centralized in `olnoo-admin`'s `createLeadRecord` —
+not implemented here.
+
 ## Learn More
 
 To learn more, take a look at the following resources:

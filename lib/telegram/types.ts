@@ -61,6 +61,9 @@ export interface NewOrder {
 export interface CreatedOrder {
   id: string
   number: string
+  /** The order's own stable UUID (orders.source_session_id) — NOT the bigint `id`. Reused as-is
+   * as the OLNOO CRM's `lead_tracking_id` so a retried CRM sync can never create a second lead. */
+  sourceSessionId: string
   telegramChatId: string
   serviceType: ServiceType
   clientName: string

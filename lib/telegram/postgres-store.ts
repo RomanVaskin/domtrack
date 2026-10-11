@@ -100,7 +100,7 @@ export class PostgresSessionStore implements SessionStore {
 
   async findOrderBySessionId(sessionId: string): Promise<CreatedOrder | null> {
     const rows = await getDatabase()`
-      SELECT id, number, telegram_chat_id, service_type, client_name,
+      SELECT id, number, source_session_id, telegram_chat_id, service_type, client_name,
              client_phone, address, requested_date, requested_time,
              photo_report_enabled, parameters, comment, total_price
       FROM orders
@@ -295,7 +295,7 @@ async function createOrder(sql: TransactionSql, order: NewOrder): Promise<Create
     )
     ON CONFLICT (source_session_id) DO UPDATE SET
       source_session_id = EXCLUDED.source_session_id
-    RETURNING id, number, telegram_chat_id, service_type, client_name,
+    RETURNING id, number, source_session_id, telegram_chat_id, service_type, client_name,
               client_phone, address, requested_date, requested_time,
               photo_report_enabled, parameters, comment, total_price
   `
@@ -306,6 +306,7 @@ function mapCreatedOrder(row: Record<string, unknown>): CreatedOrder {
   return {
     id: String(row.id),
     number: String(row.number),
+    sourceSessionId: String(row.source_session_id),
     telegramChatId: String(row.telegram_chat_id),
     serviceType: String(row.service_type) as CreatedOrder['serviceType'],
     clientName: String(row.client_name),
