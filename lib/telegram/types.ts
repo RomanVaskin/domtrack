@@ -6,6 +6,8 @@ export const SERVICE_TYPES = [
   'snow_removal',
   'leaf_removal',
   'pool_care',
+  'handyman',
+  'house_prep',
   'other',
 ] as const
 
@@ -27,6 +29,7 @@ export interface SessionData {
   requestedTime?: string
   photoReportEnabled?: boolean
   comment?: string
+  adminOrderId?: string
 }
 
 export interface TelegramSession {
@@ -49,6 +52,7 @@ export interface NewOrder {
   photoReportEnabled: boolean
   parameters: OrderParameters
   comment?: string
+  totalPrice: number | null
 }
 
 export interface CreatedOrder {
@@ -64,6 +68,7 @@ export interface CreatedOrder {
   photoReportEnabled: boolean
   parameters: OrderParameters
   comment?: string
+  totalPrice: number | null
 }
 
 export type ConfirmOrderResult =
@@ -90,6 +95,10 @@ export type AssignOrderResult =
     }
   | { kind: 'rejected' | 'not_confirmed' | 'not_found' | 'error' }
 
+export type SetOrderPriceResult =
+  | { kind: 'set'; orderNumber: string }
+  | { kind: 'not_found' | 'error' }
+
 export interface SessionStore {
   withChatLock<T>(
     chatId: string,
@@ -99,6 +108,7 @@ export interface SessionStore {
   confirmOrder(orderId: string): Promise<ConfirmOrderResult>
   assignOrder(orderId: string): Promise<AssignOrderResult>
   rejectOrder(orderId: string): Promise<RejectOrderResult>
+  setOrderPrice(orderId: string, price: number): Promise<SetOrderPriceResult>
 }
 
 export interface SessionTransaction {

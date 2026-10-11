@@ -94,6 +94,15 @@ describe('public order token access', () => {
     assert.equal(queried, false)
     assert.equal(await loadPublicOrder('x'.repeat(32), async () => null), null)
   })
+
+  test('total_price maps to totalPrice, and stays null when unset', async () => {
+    const withPrice = { ...firstRow, total_price: 8900 }
+    const withoutPrice = { ...firstRow, total_price: null }
+    const priced = await loadPublicOrder(firstToken, async () => withPrice)
+    const unpriced = await loadPublicOrder(firstToken, async () => withoutPrice)
+    assert.equal(priced?.totalPrice, 8900)
+    assert.equal(unpriced?.totalPrice, null)
+  })
 })
 
 describe('tracker presentation', () => {

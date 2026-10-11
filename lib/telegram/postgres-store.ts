@@ -8,6 +8,7 @@ import type {
   RejectOrderResult,
   SessionStore,
   SessionTransaction,
+  SetOrderPriceResult,
   TelegramSession,
 } from './types'
 
@@ -91,7 +92,7 @@ export class PostgresSessionStore implements SessionStore {
     const rows = await getDatabase()`
       SELECT id, number, telegram_chat_id, service_type, client_name,
              client_phone, address, requested_date, requested_time,
-             photo_report_enabled, parameters, comment
+             photo_report_enabled, parameters, comment, total_price
       FROM orders
       WHERE source_session_id = ${sessionId}
     `
@@ -204,6 +205,22 @@ export class PostgresSessionStore implements SessionStore {
       return { kind: 'error' }
     }
   }
+
+  async setOrderPrice(orderId: string, price: number): Promise<SetOrderPriceResult> {
+    if (!/^\d+$/.test(orderId)) return { kind: 'not_found' }
+    try {
+      const rows = await getDatabase()`
+        UPDATE orders
+        SET total_price = ${price}
+        WHERE id = ${orderId}::bigint
+        RETURNING number
+      `
+      if (!rows[0]) return { kind: 'not_found' }
+      return { kind: 'set', orderNumber: String(rows[0].number) }
+    } catch {
+      return { kind: 'error' }
+    }
+  }
 }
 
 async function createOrder(sql: TransactionSql, order: NewOrder): Promise<CreatedOrder> {
@@ -221,7 +238,8 @@ async function createOrder(sql: TransactionSql, order: NewOrder): Promise<Create
       parameters,
       comment,
       status,
-      source_session_id
+      source_session_id,
+      total_price
     ) VALUES (
       ${order.telegramChatId}::bigint,
       ${order.telegramUsername ?? null},
@@ -235,13 +253,14 @@ async function createOrder(sql: TransactionSql, order: NewOrder): Promise<Create
       ${sql.json(order.parameters as postgres.JSONValue)},
       ${order.comment ?? null},
       'new',
-      ${order.sourceSessionId}
+      ${order.sourceSessionId},
+      ${order.totalPrice}
     )
     ON CONFLICT (source_session_id) DO UPDATE SET
       source_session_id = EXCLUDED.source_session_id
     RETURNING id, number, telegram_chat_id, service_type, client_name,
               client_phone, address, requested_date, requested_time,
-              photo_report_enabled, parameters, comment
+              photo_report_enabled, parameters, comment, total_price
   `
   return mapCreatedOrder(rows[0])
 }
@@ -260,6 +279,7 @@ function mapCreatedOrder(row: Record<string, unknown>): CreatedOrder {
     photoReportEnabled: Boolean(row.photo_report_enabled),
     parameters: row.parameters as CreatedOrder['parameters'],
     ...(row.comment ? { comment: String(row.comment) } : {}),
+    totalPrice: row.total_price === null || row.total_price === undefined ? null : Number(row.total_price),
   }
 }
 
