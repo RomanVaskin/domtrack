@@ -21,19 +21,29 @@ import type {
 
 export const SERVICE_LABELS: Record<ServiceType, string> = {
   house_cleaning: 'Уборка дома',
-  window_cleaning: 'Мойка окон',
+  window_cleaning: 'Окна и фасад',
   furniture_cleaning: 'Химчистка мебели',
   lawn_mowing: 'Стрижка газона',
   snow_removal: 'Уборка снега',
   leaf_removal: 'Уборка листьев',
-  pool_care: 'Уход за бассейном',
-  handyman: 'Мелкий ремонт по дому',
+  pool_care: 'Бассейн',
+  handyman: 'Мастер по дому',
   house_prep: 'Подготовить дом к приезду',
   other: 'Другое',
 }
 
-const SERVICE_BUTTONS: InlineButton[][] = Object.entries(SERVICE_LABELS).map(
-  ([value, text]) => [{ text, callback_data: `service:${value}` }],
+const PUBLIC_SERVICE_TYPES: ServiceType[] = [
+  'house_cleaning',
+  'lawn_mowing',
+  'snow_removal',
+  'leaf_removal',
+  'window_cleaning',
+  'handyman',
+  'pool_care',
+]
+
+const SERVICE_BUTTONS: InlineButton[][] = PUBLIC_SERVICE_TYPES.map(
+  (value) => [{ text: SERVICE_LABELS[value], callback_data: `service:${value}` }],
 )
 
 const YES_NO: InlineButton[][] = [
