@@ -10,6 +10,7 @@ import {
 } from '@/lib/order-presentation'
 import type { PublicOrder } from '@/lib/orders'
 import { formatServiceParameters, SERVICE_LABELS } from '@/lib/telegram/flow'
+import { formatPriceDisplay } from '@/lib/pricing'
 
 export function ConfirmedOrderCard({
   order,
@@ -68,6 +69,9 @@ export function ConfirmedOrderCard({
               <dd className="text-right font-medium text-foreground">{order.photoReportEnabled ? 'Нужен' : 'Не нужен'}</dd>
             </div>
           </dl>
+          <p className="mt-3 border-t border-border pt-3 text-sm font-medium text-foreground">
+            {formatPriceDisplay(order.serviceType, order.parameters, order.totalPrice)}
+          </p>
         </section>
 
         {worker && order.comment && (

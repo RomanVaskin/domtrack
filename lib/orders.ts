@@ -7,7 +7,7 @@ export async function getOrderByClientToken(token: string): Promise<PublicOrder 
   return loadPublicOrder(token, async (validToken) => {
     const rows = await getDatabase()`
       SELECT number, service_type, NULL::text AS client_phone, address, requested_date,
-             requested_time, photo_report_enabled, parameters, NULL::text AS comment, status,
+             requested_time, photo_report_enabled, parameters, NULL::text AS comment, status, total_price,
              worker_name, confirmed_at, assigned_at, on_the_way_at, started_at, completed_at,
              accepted_at,
              COALESCE((
@@ -45,7 +45,7 @@ export async function getOrderByWorkerToken(token: string): Promise<PublicOrder 
   return loadPublicOrder(token, async (validToken) => {
     const rows = await getDatabase()`
       SELECT number, service_type, client_phone, address, requested_date,
-             requested_time, photo_report_enabled, parameters, comment, status,
+             requested_time, photo_report_enabled, parameters, comment, status, total_price,
              worker_name, confirmed_at, assigned_at, on_the_way_at, started_at, completed_at,
              accepted_at,
              COALESCE((

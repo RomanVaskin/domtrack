@@ -11,6 +11,7 @@ import type {
   ReplyMarkup,
   SessionStore,
   SessionTransaction,
+  SetOrderPriceResult,
   TelegramSession,
   TelegramUpdate,
 } from '../lib/telegram/types.ts'
@@ -98,6 +99,15 @@ class MemoryStore implements SessionStore {
       if (order.status !== 'new' && order.status !== 'rejected') return { kind: 'confirmed' }
       order.status = 'rejected'
       return { kind: 'rejected', orderNumber: order.number, clientChatId: order.telegramChatId }
+    })
+  }
+
+  async setOrderPrice(orderId: string, price: number): Promise<SetOrderPriceResult> {
+    return this.withOrderLock(orderId, async () => {
+      const order = this.orders.find((item) => item.id === orderId)
+      if (!order) return { kind: 'not_found' }
+      order.totalPrice = price
+      return { kind: 'set', orderNumber: order.number }
     })
   }
 
@@ -224,7 +234,10 @@ async function completeCommon(h: ReturnType<typeof harness>, useContact = false)
   const session = h.store.sessions.get(h.chatId)
   assert.equal(session?.state, 'review')
   const review = h.bot.messages.at(-1)
-  assert.match(review?.text ?? '', /Стоимость: после подтверждения/)
+  assert.match(
+    review?.text ?? '',
+    /Стоимость: \d|Предварительная стоимость: от \d|Стоимость будет подтверждена после уточнения объёма работ/,
+  )
   const submitData = review?.replyMarkup?.inline_keyboard?.[0]?.[0]?.callback_data
   assert.ok(submitData)
   assert.ok(submitData.startsWith('submit:'))
@@ -237,6 +250,7 @@ async function createHouseOrder(h: ReturnType<typeof harness>) {
   await selectService(h, 'house_cleaning')
   await h.message('180')
   await h.callback('floors:2')
+  await h.callback('tier:supporting')
   return completeCommon(h)
 }
 
@@ -256,6 +270,12 @@ function adminCallback(
   })
 }
 
+function adminMessage(h: ReturnType<typeof harness>, text: string, chatId = '99') {
+  return h.flow.handleUpdate({
+    message: { chat: { id: chatId }, from: { username: 'admin' }, text },
+  })
+}
+
 describe('Telegram order flow', () => {
   const scenarios: Array<{
     service: NewOrder['serviceType']
@@ -264,10 +284,11 @@ describe('Telegram order flow', () => {
   }> = [
     {
       service: 'house_cleaning',
-      parameters: { house_area: 120, floors: 2 },
+      parameters: { house_area: 120, floors: 2, cleaning_tier: 'general' },
       answer: async (h) => {
         await h.message('120')
         await h.callback('floors:2')
+        await h.callback('tier:general')
       },
     },
     {
@@ -308,12 +329,14 @@ describe('Telegram order flow', () => {
         snow_zone_description: 'Площадка у гаража',
         snow_area: 90,
         remove_snow: true,
+        urgent: false,
       },
       answer: async (h) => {
         await h.callback('snow:other')
         await h.message('Площадка у гаража')
         await h.message('90')
         await h.callback('yes')
+        await h.callback('no')
       },
     },
     {
@@ -327,11 +350,24 @@ describe('Telegram order flow', () => {
     },
     {
       service: 'pool_care',
-      parameters: { pool_description: 'Открытый бассейн 8×4 м' },
+      parameters: { pool_type: 'one_time', pool_description: 'Открытый бассейн 8×4 м' },
       answer: async (h) => {
+        await h.callback('pool:one_time')
         await h.message('Открытый бассейн 8×4 м')
         await h.callback('photos:skip')
       },
+    },
+    {
+      service: 'handyman',
+      parameters: { handyman_hours: 3 },
+      answer: async (h) => {
+        await h.message('3')
+      },
+    },
+    {
+      service: 'house_prep',
+      parameters: {},
+      answer: async () => {},
     },
     {
       service: 'other',
@@ -382,6 +418,7 @@ describe('Telegram order flow', () => {
     await selectService(h, 'house_cleaning')
     await h.message('100')
     await h.callback('floors:1')
+    await h.callback('tier:supporting')
     await h.callback('report:no')
     await h.message('Анна')
     await h.message('+79990000000')
@@ -412,6 +449,7 @@ describe('Telegram order flow', () => {
     await selectService(h, 'house_cleaning')
     await h.message('120')
     await h.callback('floors:2')
+    await h.callback('tier:supporting')
     await h.callback('report:no')
     await h.message('Иван')
     await h.message('+79990000000')
@@ -465,10 +503,10 @@ describe('Telegram order flow', () => {
       assert.match(notification?.text ?? '', /🧹 Новая заявка DT-000001/)
       assert.match(notification?.text ?? '', /Услуга: Уборка дома/)
       assert.match(notification?.text ?? '', /Площадь: 180 м²/)
-      assert.match(notification?.text ?? '', /Стоимость: после подтверждения/)
+      assert.match(notification?.text ?? '', /Стоимость: 10 900 ₽/)
       assert.deepEqual(
         notification?.replyMarkup?.inline_keyboard?.[0].map((button) => button.callback_data),
-        ['a:c:1', 'a:r:1'],
+        ['a:c:1', 'a:r:1', 'a:p:1'],
       )
     } finally {
       if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
@@ -594,6 +632,90 @@ describe('Telegram order flow', () => {
       await adminCallback(h, 'a:c:1', '99', 'failure-2')
       assert.deepEqual([order.clientToken, order.workerToken], tokens)
       assert.equal(h.store.orders.length, 1)
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('auto-calculated price reaches the created order through the full flow', async () => {
+    const h = harness()
+    await createHouseOrder(h)
+    // house_area 180, cleaning_tier "supporting" -> <=200 m2 tier -> 10900.
+    assert.equal(h.store.orders[0].totalPrice, 10900)
+  })
+
+  test('a manual-pricing service creates an order with totalPrice = null', async () => {
+    const h = harness()
+    await selectService(h, 'window_cleaning')
+    await h.callback('windows:3')
+    await h.callback('no')
+    const order = await completeCommon(h)
+    assert.equal(order.totalPrice, null)
+  })
+
+  test('house_prep: the preliminary "from" price is never written into total_price', async () => {
+    const h = harness()
+    await selectService(h, 'house_prep')
+    assert.match(
+      h.bot.messages.at(-1)?.text ?? '',
+      /Предварительная стоимость: от 9 900 ₽/,
+    )
+    const order = await completeCommon(h)
+    assert.equal(order.serviceType, 'house_prep')
+    assert.equal(order.totalPrice, null)
+  })
+
+  test('admin can set the price for a manual-pricing order', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await selectService(h, 'window_cleaning')
+      await h.callback('windows:3')
+      await h.callback('no')
+      await completeCommon(h)
+      assert.equal(h.store.orders[0].totalPrice, null)
+
+      await adminCallback(h, 'a:p:1', '99')
+      assert.equal(h.bot.messages.at(-1)?.text, 'Введите стоимость заказа в рублях.')
+      await adminMessage(h, '7000')
+      assert.equal(h.store.orders[0].totalPrice, 7000)
+      assert.match(h.bot.messages.at(-1)?.text ?? '', /DT-000001 установлена: 7 000 ₽/)
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('admin can change an already auto-calculated price', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      assert.equal(h.store.orders[0].totalPrice, 10900)
+      await adminCallback(h, 'a:p:1', '99')
+      await adminMessage(h, '9500')
+      assert.equal(h.store.orders[0].totalPrice, 9500)
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
+      else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
+    }
+  })
+
+  test('admin price input rejects non-numeric input and keeps waiting for a valid one', async () => {
+    const previous = process.env.TELEGRAM_ADMIN_CHAT_ID
+    process.env.TELEGRAM_ADMIN_CHAT_ID = '99'
+    try {
+      const h = harness()
+      await createHouseOrder(h)
+      await adminCallback(h, 'a:p:1', '99')
+      await adminMessage(h, 'не число')
+      assert.equal(h.store.orders[0].totalPrice, 10900)
+      assert.match(h.bot.messages.at(-1)?.text ?? '', /рублей, не меньше 0/)
+      await adminMessage(h, '5000')
+      assert.equal(h.store.orders[0].totalPrice, 5000)
     } finally {
       if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
       else process.env.TELEGRAM_ADMIN_CHAT_ID = previous

@@ -10,6 +10,7 @@ export interface PublicOrder {
   photoReportEnabled: boolean
   parameters: OrderParameters
   comment: string | null
+  totalPrice: number | null
   status: TrackableOrderStatus
   workerName: string | null
   confirmedAt: string | null
@@ -80,6 +81,7 @@ function mapPublicOrder(row: Record<string, unknown>): PublicOrder {
     photoReportEnabled: Boolean(row.photo_report_enabled),
     parameters: row.parameters as OrderParameters,
     comment: nullableString(row.comment),
+    totalPrice: nullableNumber(row.total_price),
     status: status as TrackableOrderStatus,
     workerName: nullableString(row.worker_name),
     confirmedAt: nullableDate(row.confirmed_at),
@@ -144,4 +146,8 @@ function nullableString(value: unknown): string | null {
 function nullableDate(value: unknown): string | null {
   if (value === null || value === undefined) return null
   return value instanceof Date ? value.toISOString() : String(value)
+}
+
+function nullableNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value)
 }

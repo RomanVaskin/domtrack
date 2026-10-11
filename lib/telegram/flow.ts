@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { domTrackUrl } from '../domtrack-url.ts'
+import { calculatePrice, formatPriceDisplay, formatRubles } from '../pricing.ts'
 import type {
   BotApi,
   CreatedOrder,
@@ -23,6 +24,8 @@ export const SERVICE_LABELS: Record<ServiceType, string> = {
   snow_removal: 'Уборка снега',
   leaf_removal: 'Уборка листьев',
   pool_care: 'Уход за бассейном',
+  handyman: 'Мелкий ремонт по дому',
+  house_prep: 'Подготовить дом к приезду',
   other: 'Другое',
 }
 
@@ -90,6 +93,12 @@ export class TelegramOrderFlow {
       return
     }
 
+    const adminPriceAction = callback.data.match(/^a:p:(\d+)$/)
+    if (adminPriceAction) {
+      await this.handleAdminPriceRequest(callback, adminPriceAction[1])
+      return
+    }
+
     await this.safeAnswerCallback(callback.id)
     const chatId = String(callback.message.chat.id)
     const callbackData = callback.data
@@ -133,6 +142,12 @@ export class TelegramOrderFlow {
       return
     }
 
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
+    if (adminChatId && chatId === adminChatId) {
+      const handled = await this.tryHandleAdminPriceMessage(chatId, message)
+      if (handled) return
+    }
+
     const result = await this.store.withChatLock(chatId, async (transaction) => {
       const session = await transaction.getSession()
       if (!session) return restartResult()
@@ -167,7 +182,59 @@ export class TelegramOrderFlow {
       inline_keyboard: [[
         { text: '✅ Подтвердить', callback_data: `a:c:${order.id}` },
         { text: '❌ Отклонить', callback_data: `a:r:${order.id}` },
+        { text: '💰 Указать цену', callback_data: `a:p:${order.id}` },
       ]],
+    })
+  }
+
+  private async handleAdminPriceRequest(
+    callback: NonNullable<TelegramUpdate['callback_query']>,
+    orderId: string,
+  ): Promise<void> {
+    const message = callback.message
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
+    if (!message || !adminChatId || String(message.chat.id) !== adminChatId) {
+      await this.safeAnswerCallback(callback.id, 'Недоступно.')
+      return
+    }
+    await this.store.withChatLock(adminChatId, async (transaction) => {
+      await transaction.saveSession({
+        chatId: adminChatId,
+        sessionId: randomUUID(),
+        state: 'admin_awaiting_price',
+        data: { parameters: {}, adminOrderId: orderId },
+      })
+    })
+    await this.safeAnswerCallback(callback.id)
+    await this.bot.sendMessage(adminChatId, 'Введите стоимость заказа в рублях.')
+  }
+
+  private async tryHandleAdminPriceMessage(
+    chatId: string,
+    message: TelegramMessage,
+  ): Promise<boolean> {
+    return this.store.withChatLock(chatId, async (transaction) => {
+      const session = await transaction.getSession()
+      if (!session || session.state !== 'admin_awaiting_price' || !session.data.adminOrderId) {
+        return false
+      }
+      const orderId = session.data.adminOrderId
+      const price = parseInteger(message.text?.trim(), 0, 10_000_000)
+      if (price === null) {
+        await this.bot.sendMessage(chatId, 'Введите целое число рублей, не меньше 0.')
+        return true
+      }
+      const result = await this.store.setOrderPrice(orderId, price)
+      await transaction.deleteSession()
+      if (result.kind !== 'set') {
+        await this.bot.sendMessage(chatId, 'Заявка не найдена.')
+        return true
+      }
+      await this.bot.sendMessage(
+        chatId,
+        `Стоимость заказа ${result.orderNumber} установлена: ${formatRubles(price)}.`,
+      )
+      return true
     })
   }
 
@@ -312,7 +379,14 @@ export class TelegramOrderFlow {
         const floors = callbackData === 'floors:4' ? 4 : parseIntegerCallback(callbackData, 'floors:', 1, 3)
         if (floors === null) return staleResult()
         session.data.parameters.floors = floors
-        return askPhotoReport(transaction, session)
+        return saveAndReply(transaction, session, 'cleaning_tier', {
+          text: 'Какой вид уборки нужен?',
+          replyMarkup: inline([
+            [{ text: 'Поддерживающая уборка', callback_data: 'tier:supporting' }],
+            [{ text: 'Генеральная уборка', callback_data: 'tier:general' }],
+            [{ text: 'Уборка после ремонта', callback_data: 'tier:post_renovation' }],
+          ]),
+        })
       }
       case 'windows_count': {
         if (callbackData === 'windows:6plus') {
@@ -331,10 +405,35 @@ export class TelegramOrderFlow {
         session.data.parameters.panoramic_windows = value
         return askPhotoReport(transaction, session)
       }
+      case 'cleaning_tier': {
+        const tiers: Record<string, string> = {
+          'tier:supporting': 'supporting',
+          'tier:general': 'general',
+          'tier:post_renovation': 'post_renovation',
+        }
+        const tier = tiers[callbackData]
+        if (!tier) return staleResult()
+        session.data.parameters.cleaning_tier = tier
+        return askPhotoReport(transaction, session)
+      }
       case 'collect_grass':
         return setBooleanAndContinue(transaction, session, callbackData, 'collect_grass', 'remove_grass', 'Нужен вывоз травы?')
       case 'remove_grass':
         return setBooleanAndAskReport(transaction, session, callbackData, 'remove_grass')
+      case 'pool_type': {
+        const types: Record<string, string> = {
+          'pool:one_time': 'one_time',
+          'pool:regular': 'regular',
+          'pool:winterization': 'winterization',
+          'pool:de_winterization': 'de_winterization',
+        }
+        const poolType = types[callbackData]
+        if (!poolType) return staleResult()
+        session.data.parameters.pool_type = poolType
+        return saveAndReply(transaction, session, 'pool_description', {
+          text: POOL_DESCRIPTION_PROMPT,
+        })
+      }
       case 'snow_zone': {
         const zones: Record<string, string> = {
           'snow:parking': 'Парковка / въезд',
@@ -352,8 +451,17 @@ export class TelegramOrderFlow {
         }
         return askSnowArea(transaction, session)
       }
-      case 'remove_snow':
-        return setBooleanAndAskReport(transaction, session, callbackData, 'remove_snow')
+      case 'remove_snow': {
+        const value = parseYesNo(callbackData)
+        if (value === null) return staleResult()
+        session.data.parameters.remove_snow = value
+        return saveAndReply(transaction, session, 'snow_urgent', {
+          text: 'Нужна срочная уборка?',
+          replyMarkup: inline(YES_NO),
+        })
+      }
+      case 'snow_urgent':
+        return setBooleanAndAskReport(transaction, session, callbackData, 'urgent')
       case 'bag_leaves':
         return setBooleanAndContinue(transaction, session, callbackData, 'bag_leaves', 'remove_leaves', 'Нужен вывоз листьев?')
       case 'remove_leaves':
@@ -504,6 +612,12 @@ export class TelegramOrderFlow {
           text: 'Нужно собрать листья в мешки?',
           replyMarkup: inline(YES_NO),
         })
+      }
+      case 'handyman_hours': {
+        const value = parseInteger(text, 1, 24)
+        if (value === null) return invalid('Введите целое число часов от 1 до 24.')
+        session.data.parameters.handyman_hours = value
+        return askPhotoReport(transaction, session)
       }
       case 'pool_description': {
         if (!validText(text, 1, 700)) return invalid('Введите описание от 1 до 700 символов.')
@@ -676,15 +790,37 @@ function firstServiceQuestion(serviceType: ServiceType): {
       return { state: 'plot_area', message: { text: 'Какая примерная площадь участка?' } }
     case 'pool_care':
       return {
-        state: 'pool_description',
+        state: 'pool_type',
         message: {
-          text: 'Опишите бассейн и что нужно сделать.\n\nНапример: открытый бассейн 8×4 м, нужна очистка воды и чаши.',
+          text: 'Что нужно сделать с бассейном?',
+          replyMarkup: inline([
+            [{ text: 'Разовый сервис', callback_data: 'pool:one_time' }],
+            [{ text: 'Регулярное обслуживание', callback_data: 'pool:regular' }],
+            [{ text: 'Консервация', callback_data: 'pool:winterization' }],
+            [{ text: 'Расконсервация', callback_data: 'pool:de_winterization' }],
+          ]),
+        },
+      }
+    case 'handyman':
+      return { state: 'handyman_hours', message: { text: 'Сколько часов примерно?' } }
+    case 'house_prep':
+      return {
+        state: 'photo_report',
+        message: {
+          text:
+            'Подготовим дом к вашему приезду: проверим коммуникации, протопим, уберём.\n\n' +
+            'Предварительная стоимость: от 9 900 ₽. Точную стоимость подтвердит администратор.\n\n' +
+            'Нужен фотоотчёт после работы?\n\nФото используются только для подтверждения выполненной работы в вашей персональной ссылке.',
+          replyMarkup: inline(PHOTO_REPORT),
         },
       }
     case 'other':
       return { state: 'other_description', message: { text: 'Опишите, что нужно сделать.' } }
   }
 }
+
+const POOL_DESCRIPTION_PROMPT =
+  'Опишите бассейн и что нужно сделать.\n\nНапример: открытый бассейн 8×4 м, нужна очистка воды и чаши.'
 
 function numberButton(prefix: string) {
   return (value: number): InlineButton => ({ text: String(value), callback_data: `${prefix}${value}` })
@@ -799,7 +935,11 @@ export function buildSummary(data: SessionData): string {
 
   switch (data.serviceType) {
     case 'house_cleaning':
-      lines.push(`Площадь: ${p.house_area} м²`, `Этажей: ${p.floors === 4 ? '4+' : p.floors}`)
+      lines.push(
+        `Площадь: ${p.house_area} м²`,
+        `Этажей: ${p.floors === 4 ? '4+' : p.floors}`,
+        `Вид уборки: ${cleaningTierLabel(p.cleaning_tier)}`,
+      )
       break
     case 'window_cleaning':
       lines.push(`Количество окон: ${p.windows_count}`, `Панорамные окна / сложное остекление: ${yesNo(p.panoramic_windows)}`)
@@ -813,13 +953,18 @@ export function buildSummary(data: SessionData): string {
     case 'snow_removal':
       lines.push(`Зона: ${p.snow_zone}`)
       if (p.snow_zone_description) lines.push(`Описание: ${p.snow_zone_description}`)
-      lines.push(`Площадь: ${p.snow_area} м²`, `Вывоз снега: ${yesNo(p.remove_snow)}`)
+      lines.push(`Площадь: ${p.snow_area} м²`, `Вывоз снега: ${yesNo(p.remove_snow)}`, `Срочно: ${yesNo(p.urgent)}`)
       break
     case 'leaf_removal':
       lines.push(`Площадь: ${p.plot_area} м²`, `Сбор в мешки: ${yesNo(p.bag_leaves)}`, `Вывоз листьев: ${yesNo(p.remove_leaves)}`)
       break
     case 'pool_care':
-      lines.push(`Описание: ${p.pool_description}`, `Фото бассейна: ${photoCount(p)}`)
+      lines.push(`Тип обслуживания: ${poolTypeLabel(p.pool_type)}`, `Описание: ${p.pool_description}`, `Фото бассейна: ${photoCount(p)}`)
+      break
+    case 'handyman':
+      lines.push(`Часов: ${p.handyman_hours}`)
+      break
+    case 'house_prep':
       break
     case 'other':
       lines.push(`Описание: ${p.other_description}`, `Фото задачи: ${photoCount(p)}`)
@@ -830,7 +975,7 @@ export function buildSummary(data: SessionData): string {
   lines.push('', `Дата: ${formatRussianDate(data.requestedDate)}`, `Время: ${data.requestedTime}`)
   lines.push('', `Адрес: ${data.address}`, `Клиент: ${data.clientName}`, `Телефон: ${data.clientPhone}`)
   if (data.comment) lines.push('', `Комментарий: ${data.comment}`)
-  lines.push('', 'Стоимость: после подтверждения')
+  lines.push('', formatPriceDisplay(data.serviceType, data.parameters, calculatePrice(data.serviceType, data.parameters).amount))
   return lines.join('\n')
 }
 
@@ -852,7 +997,7 @@ export function buildAdminOrderText(order: CreatedOrder): string {
     ...formatServiceParameters(order.serviceType, order.parameters),
   ]
   if (order.comment) lines.push('', `Комментарий: ${order.comment}`)
-  lines.push('', 'Стоимость: после подтверждения')
+  lines.push('', formatPriceDisplay(order.serviceType, order.parameters, order.totalPrice))
   return lines.join('\n')
 }
 
@@ -863,7 +1008,11 @@ export function formatServiceParameters(
   const p = parameters
   switch (serviceType) {
     case 'house_cleaning':
-      return [`Площадь: ${p.house_area} м²`, `Этажей: ${p.floors === 4 ? '4+' : p.floors}`]
+      return [
+        `Площадь: ${p.house_area} м²`,
+        `Этажей: ${p.floors === 4 ? '4+' : p.floors}`,
+        `Вид уборки: ${cleaningTierLabel(p.cleaning_tier)}`,
+      ]
     case 'window_cleaning':
       return [`Количество окон: ${p.windows_count}`, `Панорамные окна / сложное остекление: ${yesNo(p.panoramic_windows)}`]
     case 'furniture_cleaning':
@@ -873,17 +1022,43 @@ export function formatServiceParameters(
     case 'snow_removal': {
       const lines = [`Зона: ${p.snow_zone}`]
       if (p.snow_zone_description) lines.push(`Описание: ${p.snow_zone_description}`)
-      lines.push(`Площадь: ${p.snow_area} м²`, `Вывоз снега: ${yesNo(p.remove_snow)}`)
+      lines.push(`Площадь: ${p.snow_area} м²`, `Вывоз снега: ${yesNo(p.remove_snow)}`, `Срочно: ${yesNo(p.urgent)}`)
       return lines
     }
     case 'leaf_removal':
       return [`Площадь: ${p.plot_area} м²`, `Сбор в мешки: ${yesNo(p.bag_leaves)}`, `Вывоз листьев: ${yesNo(p.remove_leaves)}`]
     case 'pool_care':
-      return [`Описание: ${p.pool_description}`, `Фото бассейна: ${photoCount(p)}`]
+      return [`Тип обслуживания: ${poolTypeLabel(p.pool_type)}`, `Описание: ${p.pool_description}`, `Фото бассейна: ${photoCount(p)}`]
+    case 'handyman':
+      return [`Часов: ${p.handyman_hours}`]
+    case 'house_prep':
+      return []
     case 'other':
       return [`Описание: ${p.other_description}`, `Фото задачи: ${photoCount(p)}`]
   }
 }
+
+const CLEANING_TIER_LABELS: Record<string, string> = {
+  supporting: 'Поддерживающая уборка',
+  general: 'Генеральная уборка',
+  post_renovation: 'Уборка после ремонта',
+}
+
+function cleaningTierLabel(value: unknown): string {
+  return (typeof value === 'string' && CLEANING_TIER_LABELS[value]) || 'Не указан'
+}
+
+const POOL_TYPE_LABELS: Record<string, string> = {
+  one_time: 'Разовый сервис',
+  regular: 'Регулярное обслуживание',
+  winterization: 'Консервация',
+  de_winterization: 'Расконсервация',
+}
+
+function poolTypeLabel(value: unknown): string {
+  return (typeof value === 'string' && POOL_TYPE_LABELS[value]) || 'Не указан'
+}
+
 
 function photoCount(parameters: SessionData['parameters']): string {
   const photos = parameters.telegram_photo_file_ids
@@ -920,6 +1095,7 @@ function toNewOrder(session: TelegramSession): NewOrder | null {
     photoReportEnabled: data.photoReportEnabled,
     parameters: data.parameters,
     comment: data.comment,
+    totalPrice: calculatePrice(data.serviceType, data.parameters).amount,
   }
 }
 
