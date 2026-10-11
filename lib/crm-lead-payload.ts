@@ -25,6 +25,8 @@ export function buildCrmLeadPayload(order: CrmSyncOrder) {
     name: order.clientName,
     phone: order.clientPhone,
     source: 'Telegram',
+    // The only order entry point this bot has — distinct from `source` (where the lead came from).
+    channel: 'Telegram',
     service: order.service,
     message: order.message,
     lead_tracking_id: order.leadTrackingId,

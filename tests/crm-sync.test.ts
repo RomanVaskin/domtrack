@@ -36,6 +36,7 @@ test('buildCrmLeadPayload produces the correct CRM payload for a new order', () 
     name: 'Иван',
     phone: '+79990000000',
     source: 'Telegram',
+    channel: 'Telegram',
     service: 'Уборка дома',
     message: order.message,
     lead_tracking_id: '11111111-1111-4111-8111-111111111111',
