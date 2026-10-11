@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { domTrackUrl } from '../domtrack-url.ts'
 import { calculatePrice, formatPriceDisplay, formatRubles } from '../pricing.ts'
+import { sendOrderToOlnooCrm } from '../olnoo-crm.ts'
 import { TELEGRAM_CONTACT_URL } from '../telegram-contact.ts'
 import type {
   BotApi,
@@ -183,7 +184,13 @@ export class TelegramOrderFlow {
       this.bot.sendMessage(chatId, message.text, message.replyMarkup),
     )
     if (result.submittedOrder) {
-      deliveries.push(this.notifyAdminOfNewOrder(result.submittedOrder))
+      deliveries.push(
+        this.notifyAdminOfNewOrder(result.submittedOrder),
+        sendOrderToOlnooCrm(
+          result.submittedOrder,
+          SERVICE_LABELS[result.submittedOrder.serviceType],
+        ),
+      )
     }
     const outcomes = await Promise.allSettled(deliveries)
     if (outcomes.some((outcome) => outcome.status === 'rejected')) {
