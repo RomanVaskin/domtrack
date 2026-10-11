@@ -100,9 +100,10 @@ export async function createReferralPartner(
 /** Public attribution lookup used by /start ref_CODE and /r/[code] — only an active partner matches. */
 export async function getActiveReferralPartnerByCode(
   code: string,
+  sql: Sql = getDatabase(),
 ): Promise<{ id: string; code: string } | null> {
   if (typeof code !== 'string' || !REFERRAL_CODE_PATTERN.test(code)) return null
-  const rows = await getDatabase()`
+  const rows = await sql`
     SELECT id, code FROM referral_partners WHERE code = ${code} AND active = true
   `
   return rows[0] ? { id: String(rows[0].id), code: String(rows[0].code) } : null
