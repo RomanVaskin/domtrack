@@ -1,10 +1,13 @@
-import { House, Trees, Snowflake, Truck } from 'lucide-react'
+import { House, Leaf, Snowflake, Sparkles, Trees, Waves, Wrench } from 'lucide-react'
 
 const services = [
-  { icon: House, title: 'Дом', desc: 'Уборка, химчистка, мойка окон, мелкий ремонт' },
-  { icon: Trees, title: 'Участок', desc: 'Газон, снег, листья, дорожки, террасы, фасады' },
-  { icon: Snowflake, title: 'Сезонные работы', desc: 'Бассейн, подготовка участка и дома к сезону' },
-  { icon: Truck, title: 'Доставка', desc: 'Вода, газ, дрова, уголь' },
+  { icon: House, title: 'Уборка дома', desc: 'Поддерживающая, генеральная и уборка после ремонта' },
+  { icon: Trees, title: 'Стрижка газона', desc: 'Покос, сбор и вывоз травы' },
+  { icon: Snowflake, title: 'Уборка снега', desc: 'Парковка, въезд, дорожки и территория' },
+  { icon: Leaf, title: 'Уборка листьев', desc: 'Сбор листьев в мешки и вывоз' },
+  { icon: Sparkles, title: 'Окна и фасад', desc: 'Мойка окон, остекления и фасада' },
+  { icon: Wrench, title: 'Мастер по дому', desc: 'Мелкий ремонт и бытовые работы' },
+  { icon: Waves, title: 'Бассейн', desc: 'Разовое и регулярное обслуживание' },
 ]
 
 export function ServiceGrid() {
