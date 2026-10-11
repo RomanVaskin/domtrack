@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 // Node's plain ESM resolver can't follow `next/server`'s bare subpath (no "exports" map in the
 // `next` package) or this project's `@/*` alias outside Next's own bundler. Registering a tiny
@@ -9,8 +10,12 @@ import { test } from 'node:test'
 // the helper it calls.
 register('./support/next-module-loader.mjs', import.meta.url)
 
+// Computed relative to this file (not hardcoded), so it resolves correctly regardless of where
+// the repository checkout lives (sandbox, CI, a contributor's machine, ...).
+const REFERRAL_PARTNERS_MODULE = fileURLToPath(new URL('../lib/referral-partners.ts', import.meta.url))
+
 test('GET /r/[code] — an active partner sets the referral cookie and redirects home', async (t) => {
-  t.mock.module('/home/user/domtrack/lib/referral-partners.ts', {
+  t.mock.module(REFERRAL_PARTNERS_MODULE, {
     namedExports: {
       getActiveReferralPartnerByCode: async (code: string) =>
         code === 'GOODCODE' ? { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', code: 'GOODCODE' } : null,
@@ -35,7 +40,7 @@ test('GET /r/[code] — an active partner sets the referral cookie and redirects
 })
 
 test('GET /r/[code] — secure matches production behavior', async (t) => {
-  t.mock.module('/home/user/domtrack/lib/referral-partners.ts', {
+  t.mock.module(REFERRAL_PARTNERS_MODULE, {
     namedExports: {
       getActiveReferralPartnerByCode: async () => ({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', code: 'GOODCODE' }),
     },
@@ -55,7 +60,7 @@ test('GET /r/[code] — secure matches production behavior', async (t) => {
 })
 
 test('GET /r/[code] — an unknown code redirects home and sets no cookie', async (t) => {
-  t.mock.module('/home/user/domtrack/lib/referral-partners.ts', {
+  t.mock.module(REFERRAL_PARTNERS_MODULE, {
     namedExports: {
       getActiveReferralPartnerByCode: async () => null,
     },
@@ -73,7 +78,7 @@ test('GET /r/[code] — an inactive partner\'s code redirects home and sets no c
   // getActiveReferralPartnerByCode itself only ever resolves active partners (asserted
   // separately in tests/referral-partners.test.ts); here we assert the route's own behavior
   // when the lookup correctly reports "not found" for a disabled partner.
-  t.mock.module('/home/user/domtrack/lib/referral-partners.ts', {
+  t.mock.module(REFERRAL_PARTNERS_MODULE, {
     namedExports: {
       getActiveReferralPartnerByCode: async (code: string) => {
         assert.equal(code, 'DISABLEDCODE')
