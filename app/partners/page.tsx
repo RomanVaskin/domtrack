@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { Logo } from '@/components/logo'
 import { Button } from '@/components/ui/button'
+import { domTrackBaseUrl } from '@/lib/domtrack-url'
 import { formatRubles } from '@/lib/pricing'
 import { TELEGRAM_PARTNER_START_URL } from '@/lib/telegram-contact'
 import { getReferralCodeFromCookies, resolveTelegramOrderUrl } from '@/lib/referral-attribution'
@@ -23,6 +24,7 @@ export const metadata: Metadata = {
   title: 'Партнёрская программа DomTrack — 10% с выполненных заказов',
   description:
     'Рекомендуйте DomTrack владельцам загородных домов и получайте 10% с каждого выполненного заказа.',
+  alternates: { canonical: `${domTrackBaseUrl().replace(/\/$/, '')}/partners` },
 }
 
 const AUDIENCE = [

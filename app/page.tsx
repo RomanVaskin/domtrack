@@ -1,3 +1,4 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import { SiteHeader } from '@/components/site-header'
 import { Hero } from '@/components/hero'
@@ -9,7 +10,12 @@ import { Benefits } from '@/components/benefits'
 import { ReferralTeaser } from '@/components/referral-teaser'
 import { FinalCta } from '@/components/final-cta'
 import { Logo } from '@/components/logo'
+import { domTrackBaseUrl } from '@/lib/domtrack-url'
 import { getReferralCodeFromCookies, resolveTelegramOrderUrl } from '@/lib/referral-attribution'
+
+export const metadata: Metadata = {
+  alternates: { canonical: domTrackBaseUrl().replace(/\/$/, '') },
+}
 
 export default async function HomePage() {
   const referralCode = await getReferralCodeFromCookies()
