@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 import { TelegramOrderFlow } from '../lib/telegram/flow.ts'
+import { computeCommission } from '../lib/referral-partners.ts'
 import type {
   AssignOrderResult,
   BotApi,
   ConfirmOrderResult,
   CreatedOrder,
   NewOrder,
+  ReferralOrderSummary,
+  ReferralPartner,
+  ReferralPartnerAdminDetail,
+  ReferralPartnerStats,
   RejectOrderResult,
   ReplyMarkup,
   SessionStore,
@@ -16,14 +21,19 @@ import type {
   TelegramUpdate,
 } from '../lib/telegram/types.ts'
 
+type MemoryOrder = NewOrder & CreatedOrder & {
+  status: 'new' | 'confirmed' | 'assigned' | 'on_the_way' | 'in_progress' | 'completed' | 'accepted' | 'rejected'
+  clientToken?: string
+  workerToken?: string
+  workerName?: string
+  createdAt: string
+}
+
 class MemoryStore implements SessionStore {
   sessions = new Map<string, TelegramSession>()
-  orders: Array<NewOrder & CreatedOrder & {
-    status: 'new' | 'confirmed' | 'assigned' | 'on_the_way' | 'in_progress' | 'completed' | 'accepted' | 'rejected'
-    clientToken?: string
-    workerToken?: string
-    workerName?: string
-  }> = []
+  orders: MemoryOrder[] = []
+  referralPartners = new Map<string, ReferralPartner>()
+  private referralSeq = 0
   private locks = new Map<string, Promise<void>>()
   private orderLocks = new Map<string, Promise<void>>()
 
@@ -52,11 +62,19 @@ class MemoryStore implements SessionStore {
             (item) => item.sourceSessionId === order.sourceSessionId,
           )
           if (existing) return existing
-          const created = {
+          // Mirrors postgres-store.ts: re-check the partner is still active right before
+          // the insert, never trust what the session carried from /start alone.
+          const partner = order.referralPartnerId ? this.referralPartners.get(order.referralPartnerId) : undefined
+          const referralPartnerId = partner?.active ? partner.id : null
+          const referralSource = referralPartnerId ? order.referralSource : null
+          const created: MemoryOrder = {
             ...structuredClone(order),
+            referralPartnerId,
+            referralSource,
             id: String(this.orders.length + 1),
             number: `DT-${String(this.orders.length + 1).padStart(6, '0')}`,
             status: 'new' as const,
+            createdAt: new Date().toISOString(),
           }
           this.orders.push(created)
           return created
@@ -109,6 +127,81 @@ class MemoryStore implements SessionStore {
       order.totalPrice = price
       return { kind: 'set', orderNumber: order.number }
     })
+  }
+
+  async getActiveReferralPartnerByCode(code: string): Promise<{ id: string; code: string } | null> {
+    for (const partner of this.referralPartners.values()) {
+      if (partner.code === code && partner.active) return { id: partner.id, code: partner.code }
+    }
+    return null
+  }
+
+  async createReferralPartner(name: string): Promise<ReferralPartner> {
+    this.referralSeq += 1
+    const partner: ReferralPartner = {
+      id: `partner-${this.referralSeq}`,
+      name: name.trim(),
+      code: `CODE${this.referralSeq}`,
+      accessToken: `token-${this.referralSeq}`.padEnd(32, 'x'),
+      commissionPercent: 10,
+      active: true,
+      createdAt: new Date().toISOString(),
+    }
+    this.referralPartners.set(partner.id, partner)
+    return partner
+  }
+
+  async listReferralPartners(): Promise<ReferralPartnerStats[]> {
+    return [...this.referralPartners.values()].map((partner) => this.statsFor(partner))
+  }
+
+  async getReferralPartnerAdminDetail(id: string): Promise<ReferralPartnerAdminDetail | null> {
+    const partner = this.referralPartners.get(id)
+    if (!partner) return null
+    return { ...this.statsFor(partner), orders: this.ordersFor(partner), accessToken: partner.accessToken }
+  }
+
+  private ordersFor(partner: ReferralPartner): ReferralOrderSummary[] {
+    return this.orders
+      .filter((order) => order.referralPartnerId === partner.id)
+      .map((order) => {
+        const accruable = order.status === 'completed' || order.status === 'accepted'
+        return {
+          id: order.id,
+          number: order.number,
+          createdAt: order.createdAt,
+          totalPrice: order.totalPrice,
+          status: order.status,
+          statusLabel: order.status,
+          commissionState: !accruable ? 'pending' : order.totalPrice === null ? 'price_unconfirmed' : 'accrued',
+          commission: accruable ? computeCommission(order.totalPrice, partner.commissionPercent) : 0,
+        } satisfies ReferralOrderSummary
+      })
+  }
+
+  private statsFor(partner: ReferralPartner): ReferralPartnerStats {
+    const orders = this.ordersFor(partner)
+    let totalAmount = 0
+    let completedAmount = 0
+    let accruedCommission = 0
+    for (const order of orders) {
+      if (order.totalPrice !== null) totalAmount += order.totalPrice
+      if (order.commissionState === 'accrued') {
+        completedAmount += order.totalPrice!
+        accruedCommission += order.commission
+      }
+    }
+    return {
+      id: partner.id,
+      name: partner.name,
+      code: partner.code,
+      active: partner.active,
+      commissionPercent: partner.commissionPercent,
+      ordersCount: orders.length,
+      totalAmount,
+      completedAmount,
+      accruedCommission,
+    }
   }
 
   async assignOrder(orderId: string): Promise<AssignOrderResult> {
@@ -248,6 +341,19 @@ async function completeCommon(h: ReturnType<typeof harness>, useContact = false)
 
 async function createHouseOrder(h: ReturnType<typeof harness>) {
   await selectService(h, 'house_cleaning')
+  await h.message('180')
+  await h.callback('floors:2')
+  await h.callback('tier:supporting')
+  return completeCommon(h)
+}
+
+/**
+ * Same as createHouseOrder, but assumes the session is already at 'awaiting_service' (e.g.
+ * after a referral-carrying /start + "begin") instead of restarting the flow with a plain /start,
+ * which would otherwise wipe out any referral attribution already captured on the session.
+ */
+async function createHouseOrderFromAwaitingService(h: ReturnType<typeof harness>) {
+  await h.callback('service:house_cleaning')
   await h.message('180')
   await h.callback('floors:2')
   await h.callback('tier:supporting')
@@ -720,5 +826,189 @@ describe('Telegram order flow', () => {
       if (previous === undefined) delete process.env.TELEGRAM_ADMIN_CHAT_ID
       else process.env.TELEGRAM_ADMIN_CHAT_ID = previous
     }
+  })
+})
+
+describe('Referral program', () => {
+  async function withEnv<T>(vars: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+    const previous: Record<string, string | undefined> = {}
+    for (const [key, value] of Object.entries(vars)) {
+      previous[key] = process.env[key]
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    try {
+      return await run()
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  }
+
+  test('valid /start ref_CODE attributes the session to the active partner', async () => {
+    const h = harness()
+    const partner = await h.store.createReferralPartner('Садовый партнёр')
+    await h.message(`/start ref_${partner.code}`)
+    assert.equal(h.store.sessions.get(h.chatId)?.data.referralPartnerId, partner.id)
+    assert.match(h.bot.messages.at(-1)?.text ?? '', /Добро пожаловать в DomTrack/)
+  })
+
+  test('an invalid/unknown referral code still starts a plain session', async () => {
+    const h = harness()
+    await h.message('/start ref_DOESNOTEXIST')
+    assert.equal(h.store.sessions.get(h.chatId)?.data.referralPartnerId, undefined)
+    assert.match(h.bot.messages.at(-1)?.text ?? '', /Добро пожаловать в DomTrack/)
+  })
+
+  test('a referred order writes referral_partner_id and referral_source="telegram"', async () => {
+    const h = harness()
+    const partner = await h.store.createReferralPartner('Реферал А')
+    await h.message(`/start ref_${partner.code}`)
+    await h.callback('begin')
+    const order = await createHouseOrderFromAwaitingService(h)
+    assert.equal(order.referralPartnerId, partner.id)
+    assert.equal(order.referralSource, 'telegram')
+  })
+
+  test('a plain order (no referral code) is created with referral fields null', async () => {
+    const h = harness()
+    const order = await createHouseOrder(h)
+    assert.equal(order.referralPartnerId, null)
+    assert.equal(order.referralSource, null)
+  })
+
+  test('referral attribution survives the full real Telegram order-flow state machine', async () => {
+    const h = harness()
+    const partner = await h.store.createReferralPartner('Реферал Б')
+    await h.message(`/start ref_${partner.code}`)
+    await h.callback('begin')
+    await h.callback('service:snow_removal')
+    await h.callback('snow:parking')
+    await h.message('80')
+    await h.callback('yes')
+    await h.callback('no')
+    const order = await completeCommon(h)
+    assert.equal(order.serviceType, 'snow_removal')
+    assert.equal(order.referralPartnerId, partner.id)
+    assert.equal(order.referralSource, 'telegram')
+  })
+
+  test('referral attribution survives review -> edit, which rebuilds session.data from scratch', async () => {
+    const h = harness()
+    const partner = await h.store.createReferralPartner('Реферал В')
+    await h.message(`/start ref_${partner.code}`)
+    await h.callback('begin')
+    await h.callback('service:house_cleaning')
+    await h.message('180')
+    await h.callback('floors:2')
+    await h.callback('tier:supporting')
+    await h.callback('report:yes')
+    await h.message('Иван')
+    await h.message('+7 999 123-45-67')
+    await h.message('Москва, Лесная улица, 1')
+    await h.callback('date:tomorrow')
+    await h.callback('time:12')
+    await h.callback('comment:none')
+    assert.equal(h.store.sessions.get(h.chatId)?.state, 'review')
+    assert.equal(h.store.sessions.get(h.chatId)?.data.referralPartnerId, partner.id)
+
+    await h.callback('edit')
+    assert.equal(h.store.sessions.get(h.chatId)?.state, 'awaiting_service')
+    assert.equal(h.store.sessions.get(h.chatId)?.data.referralPartnerId, partner.id)
+
+    await h.callback('service:house_cleaning')
+    await h.message('150')
+    await h.callback('floors:1')
+    await h.callback('tier:general')
+    const order = await completeCommon(h)
+    assert.equal(order.referralPartnerId, partner.id)
+  })
+
+  test('a partner disabled between /start and submit is never attributed', async () => {
+    const h = harness()
+    const partner = await h.store.createReferralPartner('Реферал Г')
+    await h.message(`/start ref_${partner.code}`)
+    await h.callback('begin')
+    // Disabled mid-flow, after attribution was captured in the session but before submit.
+    h.store.referralPartners.get(partner.id)!.active = false
+    const order = await createHouseOrderFromAwaitingService(h)
+    assert.equal(order.referralPartnerId, null)
+    assert.equal(order.referralSource, null)
+  })
+
+  test('non-admin chat cannot run /referrals', async () => {
+    await withEnv({ TELEGRAM_ADMIN_CHAT_ID: '99' }, async () => {
+      const h = harness()
+      await h.message('/referrals')
+      assert.equal(h.bot.messages.filter((m) => /Рефералы/.test(m.text)).length, 0)
+    })
+  })
+
+  test('admin can create a referral partner via /referrals -> Создать реферала', async () => {
+    await withEnv({ TELEGRAM_ADMIN_CHAT_ID: '99' }, async () => {
+      const h = harness()
+      await adminMessage(h, '/referrals', '99')
+      assert.match(h.bot.messages.at(-1)?.text ?? '', /Рефералы/)
+
+      await adminCallback(h, 'rf:new', '99')
+      assert.match(h.bot.messages.at(-1)?.text ?? '', /Введите имя/)
+
+      await adminMessage(h, 'Иван Партнёров', '99')
+      const created = h.bot.messages.at(-1)?.text ?? ''
+      assert.match(created, /Партнёр: Иван Партнёров/)
+      assert.match(created, /start=ref_/)
+      assert.match(created, /\/r\//)
+      assert.match(created, /\/partner\//)
+      assert.equal(h.store.referralPartners.size, 1)
+    })
+  })
+
+  test('admin can list referral partners', async () => {
+    await withEnv({ TELEGRAM_ADMIN_CHAT_ID: '99' }, async () => {
+      const h = harness()
+      await h.store.createReferralPartner('Партнёр Один')
+      await adminCallback(h, 'rf:list', '99')
+      assert.match(h.bot.messages.at(-1)?.text ?? '', /Партнёр Один/)
+    })
+  })
+
+  test('admin reopening a partner shows Telegram, website and private stats links', async () => {
+    await withEnv({ TELEGRAM_ADMIN_CHAT_ID: '99' }, async () => {
+      const h = harness()
+      const partner = await h.store.createReferralPartner('Партнёр Детали')
+      await adminCallback(h, `rf:open:${partner.id}`, '99')
+      const text = h.bot.messages.at(-1)?.text ?? ''
+      assert.match(text, new RegExp(`start=ref_${partner.code}`))
+      assert.match(text, new RegExp(`/r/${partner.code}`))
+      assert.match(text, new RegExp(`/partner/${partner.accessToken}`))
+    })
+  })
+
+  test('/start partner with a valid admin username shows a contact button and notifies the admin', async () => {
+    await withEnv({ TELEGRAM_ADMIN_CHAT_ID: '99', TELEGRAM_ADMIN_USERNAME: 'domtrack_admin' }, async () => {
+      const h = harness()
+      await h.message('/start partner')
+      const reply = h.bot.messages.find((m) => m.chatId === h.chatId)
+      assert.match(reply?.text ?? '', /стать партнёром/i)
+      assert.equal(
+        reply?.replyMarkup?.inline_keyboard?.[0]?.[0]?.url,
+        'https://t.me/domtrack_admin',
+      )
+      const adminNotice = h.bot.messages.find((m) => m.chatId === '99')
+      assert.match(adminNotice?.text ?? '', /Запрос на партнёрство/)
+      assert.match(adminNotice?.text ?? '', /\/referrals/)
+    })
+  })
+
+  test('/start partner with a missing/invalid admin username falls back with no button', async () => {
+    await withEnv({ TELEGRAM_ADMIN_CHAT_ID: '99', TELEGRAM_ADMIN_USERNAME: undefined }, async () => {
+      const h = harness()
+      await h.message('/start partner')
+      const reply = h.bot.messages.find((m) => m.chatId === h.chatId)
+      assert.equal(reply?.replyMarkup, undefined)
+      assert.match(reply?.text ?? '', /администратор уже получил уведомление/i)
+    })
   })
 })

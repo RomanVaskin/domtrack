@@ -1,7 +1,7 @@
 import { ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
-export function FinalCta() {
+export function FinalCta({ telegramUrl }: { telegramUrl: string }) {
   return (
     <section className="mx-auto max-w-6xl px-4 pt-20 sm:px-5 sm:pt-24 md:px-8 md:pt-32">
       <div className="rounded-3xl bg-primary px-6 py-14 text-center text-primary-foreground sm:px-12 sm:py-16">
@@ -14,7 +14,7 @@ export function FinalCta() {
         </p>
         <div className="mx-auto mt-8 flex max-w-sm flex-col gap-3 sm:max-w-none sm:flex-row sm:justify-center">
           <Button
-            render={<a href="https://t.me/DomTrackBot" target="_blank" rel="noreferrer" />}
+            render={<a href={telegramUrl} target="_blank" rel="noreferrer" />}
             nativeButton={false}
             size="lg"
             className="w-full rounded-full bg-primary-foreground px-7 text-primary hover:bg-primary-foreground/90 sm:w-auto"

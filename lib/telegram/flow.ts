@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { domTrackUrl } from '../domtrack-url.ts'
 import { calculatePrice, formatPriceDisplay, formatRubles } from '../pricing.ts'
+import { TELEGRAM_CONTACT_URL } from '../telegram-contact.ts'
 import type {
   BotApi,
   CreatedOrder,
   InlineButton,
   NewOrder,
+  ReferralPartnerAdminDetail,
+  ReferralPartnerStats,
   ReplyMarkup,
   ServiceType,
   SessionData,
@@ -99,6 +102,16 @@ export class TelegramOrderFlow {
       return
     }
 
+    const referralAdminAction = callback.data.match(/^rf:(list|new|open):?(.*)$/)
+    if (referralAdminAction) {
+      await this.handleReferralAdminCallback(
+        callback,
+        referralAdminAction[1] as 'list' | 'new' | 'open',
+        referralAdminAction[2],
+      )
+      return
+    }
+
     await this.safeAnswerCallback(callback.id)
     const chatId = String(callback.message.chat.id)
     const callbackData = callback.data
@@ -122,29 +135,25 @@ export class TelegramOrderFlow {
       await this.bot.sendMessage(chatId, `Ваш Telegram chat_id: ${chatId}`)
       return
     }
-    if (message.text && /^\/start(?:@\w+)?(?:\s|$)/i.test(message.text)) {
-      const result = await this.store.withChatLock(chatId, async (transaction) => {
-        const session = newSession(chatId, message.from?.username)
-        await transaction.saveSession(session)
-        return {
-          messages: [
-            {
-              text:
-                'Добро пожаловать в DomTrack.\n\nЗакажите услугу для дома или участка за пару минут.',
-              replyMarkup: inline([
-                [{ text: 'Заказать услугу', callback_data: 'begin' }],
-              ]),
-            },
-          ],
-        }
-      })
-      await this.deliver(chatId, result)
+    const startMatch = message.text?.match(/^\/start(?:@\w+)?(?:\s+(\S+))?\s*$/i)
+    if (startMatch) {
+      const payload = startMatch[1]
+      if (payload === 'partner') {
+        await this.handleStartPartnerInquiry(chatId, message.from?.username)
+        return
+      }
+      const refMatch = payload?.match(/^ref_([A-Za-z0-9]+)$/)
+      await this.handleStart(chatId, message.from?.username, refMatch ? refMatch[1] : null)
       return
     }
 
     const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
     if (adminChatId && chatId === adminChatId) {
-      const handled = await this.tryHandleAdminPriceMessage(chatId, message)
+      if (/^\/referrals(?:@\w+)?(?:\s|$)/i.test(message.text ?? '')) {
+        await this.bot.sendMessage(chatId, 'Рефералы', referralsMenuKeyboard())
+        return
+      }
+      const handled = await this.tryHandleAdminMessage(chatId, message)
       if (handled) return
     }
 
@@ -209,23 +218,31 @@ export class TelegramOrderFlow {
     await this.bot.sendMessage(adminChatId, 'Введите стоимость заказа в рублях.')
   }
 
-  private async tryHandleAdminPriceMessage(
+  private async tryHandleAdminMessage(
     chatId: string,
     message: TelegramMessage,
   ): Promise<boolean> {
-    return this.store.withChatLock(chatId, async (transaction) => {
+    const pending = await this.store.withChatLock(chatId, async (transaction) => {
       const session = await transaction.getSession()
-      if (!session || session.state !== 'admin_awaiting_price' || !session.data.adminOrderId) {
-        return false
+      if (!session) return null
+      if (session.state === 'admin_awaiting_price' && session.data.adminOrderId) {
+        return { kind: 'price' as const, orderId: session.data.adminOrderId }
       }
-      const orderId = session.data.adminOrderId
+      if (session.state === 'admin_awaiting_referral_name') {
+        return { kind: 'referral_name' as const }
+      }
+      return null
+    })
+    if (!pending) return false
+
+    if (pending.kind === 'price') {
       const price = parseInteger(message.text?.trim(), 0, 10_000_000)
       if (price === null) {
         await this.bot.sendMessage(chatId, 'Введите целое число рублей, не меньше 0.')
         return true
       }
-      const result = await this.store.setOrderPrice(orderId, price)
-      await transaction.deleteSession()
+      const result = await this.store.setOrderPrice(pending.orderId, price)
+      await this.store.withChatLock(chatId, async (transaction) => transaction.deleteSession())
       if (result.kind !== 'set') {
         await this.bot.sendMessage(chatId, 'Заявка не найдена.')
         return true
@@ -235,7 +252,127 @@ export class TelegramOrderFlow {
         `Стоимость заказа ${result.orderNumber} установлена: ${formatRubles(price)}.`,
       )
       return true
+    }
+
+    const name = message.text?.trim()
+    if (!validText(name, 1, 120)) {
+      await this.bot.sendMessage(chatId, 'Введите имя партнёра длиной от 1 до 120 символов.')
+      return true
+    }
+    const partner = await this.store.createReferralPartner(name!)
+    await this.store.withChatLock(chatId, async (transaction) => transaction.deleteSession())
+    await this.bot.sendMessage(chatId, referralPartnerCreatedText(partner))
+    return true
+  }
+
+  private async handleStart(
+    chatId: string,
+    username: string | undefined,
+    referralCode: string | null,
+  ): Promise<void> {
+    const partner = referralCode ? await this.store.getActiveReferralPartnerByCode(referralCode) : null
+    const result = await this.store.withChatLock(chatId, async (transaction) => {
+      const session = newSession(chatId, username, partner?.id)
+      await transaction.saveSession(session)
+      return {
+        messages: [
+          {
+            text:
+              'Добро пожаловать в DomTrack.\n\nЗакажите услугу для дома или участка за пару минут.',
+            replyMarkup: inline([
+              [{ text: 'Заказать услугу', callback_data: 'begin' }],
+            ]),
+          },
+        ],
+      }
     })
+    await this.deliver(chatId, result)
+  }
+
+  /**
+   * /start partner (the public /partners page's CTA). No partner is created automatically —
+   * this only gives the requester a clear next step and nudges the admin to follow up via the
+   * existing /referrals → "Создать реферала" flow. No new DB write, no new session state.
+   */
+  private async handleStartPartnerInquiry(chatId: string, username?: string): Promise<void> {
+    await this.store.withChatLock(chatId, async (transaction) => transaction.deleteSession())
+
+    const adminUsername = getTelegramAdminUsername()
+    if (adminUsername) {
+      await this.bot.sendMessage(
+        chatId,
+        'Хотите стать партнёром DomTrack?\n\n'
+          + 'Напишите администратору — мы создадим для вас персональные ссылки и доступ к статистике.',
+        { inline_keyboard: [[{ text: 'Написать администратору', url: `https://t.me/${adminUsername}` }]] },
+      )
+    } else {
+      await this.bot.sendMessage(
+        chatId,
+        'Хотите стать партнёром DomTrack?\n\n'
+          + 'Администратор уже получил уведомление о вашем запросе и свяжется с вами, если это возможно.',
+      )
+    }
+
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
+    if (!adminChatId) return
+    const contact = username ? `@${username}` : `chat_id ${chatId}`
+    try {
+      await this.bot.sendMessage(
+        adminChatId,
+        `🤝 Запрос на партнёрство от ${contact}.\n\nСоздать партнёра: /referrals → «Создать реферала».`,
+      )
+    } catch {
+      console.warn('[telegram-webhook] Partner inquiry notification failed')
+    }
+  }
+
+  private async handleReferralAdminCallback(
+    callback: NonNullable<TelegramUpdate['callback_query']>,
+    kind: 'list' | 'new' | 'open',
+    arg: string,
+  ): Promise<void> {
+    const message = callback.message
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID?.trim()
+    if (!message || !adminChatId || String(message.chat.id) !== adminChatId) {
+      await this.safeAnswerCallback(callback.id, 'Недоступно.')
+      return
+    }
+    await this.safeAnswerCallback(callback.id)
+
+    if (kind === 'new') {
+      await this.store.withChatLock(adminChatId, async (transaction) => {
+        await transaction.saveSession({
+          chatId: adminChatId,
+          sessionId: randomUUID(),
+          state: 'admin_awaiting_referral_name',
+          data: { parameters: {} },
+        })
+      })
+      await this.bot.sendMessage(adminChatId, 'Введите имя или название партнёра.')
+      return
+    }
+
+    if (kind === 'list') {
+      const partners = await this.store.listReferralPartners()
+      if (partners.length === 0) {
+        await this.bot.sendMessage(adminChatId, 'Рефералов пока нет.')
+        return
+      }
+      await this.bot.sendMessage(adminChatId, referralPartnerListText(partners), {
+        inline_keyboard: partners.map((partner) => [{
+          text: `${partner.active ? '' : '🚫 '}${partner.name}`,
+          callback_data: `rf:open:${partner.id}`,
+        }]),
+      })
+      return
+    }
+
+    const partner = await this.store.getReferralPartnerAdminDetail(arg)
+    if (!partner) {
+      await this.bot.sendMessage(adminChatId, 'Партнёр не найден.')
+      return
+    }
+    await this.bot.sendMessage(adminChatId, referralPartnerDetailText(partner))
   }
 
   private async safeAnswerCallback(callbackId: string, text?: string): Promise<void> {
@@ -536,6 +673,7 @@ export class TelegramOrderFlow {
           session.data = {
             telegramUsername: session.data.telegramUsername,
             parameters: {},
+            referralPartnerId: session.data.referralPartnerId,
           }
           return saveAndReply(transaction, session, 'awaiting_service', {
             text: 'Что нужно сделать?',
@@ -739,12 +877,20 @@ export class TelegramOrderFlow {
   }
 }
 
-function newSession(chatId: string, username?: string): TelegramSession {
+function newSession(
+  chatId: string,
+  username?: string,
+  referralPartnerId?: string,
+): TelegramSession {
   return {
     chatId,
     sessionId: randomUUID(),
     state: 'awaiting_begin',
-    data: { telegramUsername: username, parameters: {} },
+    data: {
+      telegramUsername: username,
+      parameters: {},
+      ...(referralPartnerId ? { referralPartnerId } : {}),
+    },
   }
 }
 
@@ -1096,6 +1242,10 @@ function toNewOrder(session: TelegramSession): NewOrder | null {
     parameters: data.parameters,
     comment: data.comment,
     totalPrice: calculatePrice(data.serviceType, data.parameters).amount,
+    // Tentative: re-checked against the partner's active status inside createOrder(),
+    // right before the INSERT, in the same transaction. Never trust session data alone.
+    referralPartnerId: data.referralPartnerId ?? null,
+    referralSource: data.referralPartnerId ? 'telegram' : null,
   }
 }
 
@@ -1178,4 +1328,71 @@ function formatRussianDate(isoDate?: string): string {
   if (!isoDate) return ''
   const [year, month, day] = isoDate.split('-')
   return `${day}.${month}.${year}`
+}
+
+// Real Telegram username rules: 5-32 chars, letters/digits/underscores, must start with a letter.
+const TELEGRAM_USERNAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{4,31}$/
+
+/** Returns a validated Telegram username (no leading @) for /start partner's contact button, or null. */
+function getTelegramAdminUsername(): string | null {
+  const configured = process.env.TELEGRAM_ADMIN_USERNAME?.trim() ?? ''
+  return TELEGRAM_USERNAME_PATTERN.test(configured) ? configured : null
+}
+
+function referralsMenuKeyboard(): ReplyMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: '📋 Список рефералов', callback_data: 'rf:list' }],
+      [{ text: '➕ Создать реферала', callback_data: 'rf:new' }],
+    ],
+  }
+}
+
+function referralLinksText(partner: { code: string; accessToken: string }): string[] {
+  return [
+    'Для клиентов через Telegram:',
+    `${TELEGRAM_CONTACT_URL}?start=ref_${partner.code}`,
+    '',
+    'Для клиентов через сайт:',
+    domTrackUrl(`/r/${partner.code}`),
+    '',
+    'Статистика партнёра:',
+    domTrackUrl(`/partner/${partner.accessToken}`),
+  ]
+}
+
+function referralPartnerCreatedText(partner: { name: string; code: string; accessToken: string }): string {
+  return [`Партнёр: ${partner.name}`, '', ...referralLinksText(partner)].join('\n')
+}
+
+function referralPartnerListText(partners: ReferralPartnerStats[]): string {
+  if (partners.length === 0) return 'Рефералов пока нет.'
+  return partners
+    .map((partner) => (
+      `${partner.active ? '' : '🚫 '}${partner.name} — ${partner.ordersCount} зак., `
+      + `комиссия ${formatRubles(partner.accruedCommission)}`
+    ))
+    .join('\n')
+}
+
+function referralPartnerDetailText(partner: ReferralPartnerAdminDetail): string {
+  const lines = [
+    `Партнёр: ${partner.name}${partner.active ? '' : ' (отключён)'}`,
+    `Код: ${partner.code}`,
+    `Комиссия: ${partner.commissionPercent}%`,
+    '',
+    `Заказов: ${partner.ordersCount}`,
+    `Сумма всех заказов: ${formatRubles(partner.totalAmount)}`,
+    `Сумма выполненных: ${formatRubles(partner.completedAmount)}`,
+    `Комиссия с выполненных: ${formatRubles(partner.accruedCommission)}`,
+    '',
+    ...referralLinksText(partner),
+  ]
+  if (partner.orders.length > 0) {
+    lines.push('', 'Последние заказы:')
+    for (const order of partner.orders.slice(0, 15)) {
+      lines.push(`${order.number} · ${order.totalPrice === null ? 'цена не подтверждена' : formatRubles(order.totalPrice)} · ${order.statusLabel}`)
+    }
+  }
+  return lines.join('\n')
 }

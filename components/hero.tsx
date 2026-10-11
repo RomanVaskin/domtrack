@@ -2,7 +2,7 @@ import { Button } from '@/components/ui/button'
 import { ArrowRight } from 'lucide-react'
 import { TrackerMockup } from '@/components/home/tracker-mockup'
 
-export function Hero() {
+export function Hero({ telegramUrl }: { telegramUrl: string }) {
   return (
     <section className="mx-auto max-w-6xl px-4 pt-7 sm:px-5 sm:pt-10 md:px-8 md:pt-16">
       <div className="grid items-center gap-12 md:grid-cols-[1.05fr_1fr] md:gap-12 lg:gap-20">
@@ -23,7 +23,7 @@ export function Hero() {
 
           <div className="mt-6 flex flex-col gap-3 sm:mt-8 sm:flex-row">
             <Button
-              render={<a href="https://t.me/DomTrackBot" target="_blank" rel="noreferrer" />}
+              render={<a href={telegramUrl} target="_blank" rel="noreferrer" />}
               nativeButton={false}
               size="lg"
               className="w-full rounded-full px-7 sm:w-auto"
