@@ -1,4 +1,4 @@
-name: Deploy DomTrack to production
+name: Deploy DomTrack to RU VPS
 
 # Build happens entirely on this runner. The production server only receives a prebuilt
 # archive — it never runs `next build`, and this workflow never touches nginx, the systemd unit
@@ -65,29 +65,29 @@ jobs:
       - name: Start SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.BEGET_SSH_PRIVATE_KEY }}
+          ssh-private-key: ${{ secrets.RU_SSH_PRIVATE_KEY }}
 
       - name: Upload deploy archive
         env:
-          BEGET_HOST: ${{ secrets.BEGET_HOST }}
-          BEGET_USER: ${{ secrets.BEGET_USER }}
-          BEGET_PORT: ${{ secrets.BEGET_PORT }}
+          RU_HOST: ${{ secrets.RU_HOST }}
+          RU_USER: ${{ secrets.RU_USER }}
+          RU_PORT: ${{ secrets.RU_PORT }}
         run: |
           set -euo pipefail
-          SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $BEGET_PORT"
+          SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P $RU_PORT"
           REMOTE_ARCHIVE="/tmp/domtrack-deploy-${{ github.sha }}.tar.gz"
           echo "REMOTE_ARCHIVE=$REMOTE_ARCHIVE" >> "$GITHUB_ENV"
-          scp $SCP_OPTS deploy.tar.gz "$BEGET_USER@$BEGET_HOST:$REMOTE_ARCHIVE"
+          scp $SCP_OPTS deploy.tar.gz "$RU_USER@$RU_HOST:$REMOTE_ARCHIVE"
 
       - name: Deploy and restart service
         env:
-          BEGET_HOST: ${{ secrets.BEGET_HOST }}
-          BEGET_USER: ${{ secrets.BEGET_USER }}
-          BEGET_PORT: ${{ secrets.BEGET_PORT }}
+          RU_HOST: ${{ secrets.RU_HOST }}
+          RU_USER: ${{ secrets.RU_USER }}
+          RU_PORT: ${{ secrets.RU_PORT }}
         run: |
           set -euo pipefail
-          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $BEGET_PORT"
-          ssh $SSH_OPTS "$BEGET_USER@$BEGET_HOST" bash -lc "
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $RU_PORT"
+          ssh $SSH_OPTS "$RU_USER@$RU_HOST" bash -lc "
             set -euo pipefail
 
             if [ ! -f /opt/domtrack/.env ]; then
